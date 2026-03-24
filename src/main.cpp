@@ -39,12 +39,9 @@ void setup() {
     EEPROM.begin(EEPROM_SIZE);
 
     params_init();
-    motors_init();
-    sensors_init();
-    ultrasonic_init();
-    color_init();
-    servo_init();       // uses LEDC timers 2 & 3 (motors use 0 & 1)
 
+    // BUG-10 note: load EEPROM BEFORE servo_init() so saved servo angles
+    // are applied on first write inside servo_init().
     if (!params_loadEEPROM()) {
         Serial.println(F("[BOOT] No EEPROM data – using factory defaults."));
         Serial.println(F("[BOOT] Send: CALIBRATE  then  SAVE"));
@@ -53,11 +50,18 @@ void setup() {
         params_printStatus();
     }
 
+    motors_init();
+    sensors_init();
+    ultrasonic_init();
+    color_init();
+    servo_init();       // uses LEDC timers 2 & 3 (motors use 0 & 1)
+                        // reads P.servoHomeAngle which is now correct
+
     robotState   = ST_LINE_FOLLOW;
     cubeOnBoard  = false;
     lastSeenSide = SIDE_UNKNOWN;
     robot_resetRecovery();
-    servo_close();
+    servo_close();      // confirm gate closed at start
 
     Serial.println(F("[BOOT] Starting in 2 s..."));
     delay(2000);
@@ -70,7 +74,7 @@ void loop() {
 
     switch (robotState) {
 
-        // ── Normal PID line following ─────────────────────────────────────
+        // ── Normal PID line following ───────────────────────────────────────────
         case ST_LINE_FOLLOW: {
             float dist = ultrasonic_getCached();
 
@@ -93,7 +97,7 @@ void loop() {
             break;
         }
 
-        // ── Slowing and approaching obstacle for colour read ──────────────
+        // ── Slowing and approaching obstacle for colour read ──────────────────
         case ST_OBSTACLE_SLOW: {
             float dist = ultrasonic_getCached();
 
@@ -123,35 +127,43 @@ void loop() {
             break;
         }
 
-        // ── Stopped: read colour ──────────────────────────────────────────
+        // ── Stopped: read colour ────────────────────────────────────────────────
         case ST_COLOR_DETECT: {
             motors_stop();
             delay(200);
             ColorResult col = color_detect();
 
-            if      (col == COLOR_RED)   { Serial.println(F("[STATE] RED → AVOID"));   robotState = ST_RED_AVOID;   }
-            else if (col == COLOR_GREEN) { Serial.println(F("[STATE] GREEN → PICK"));  robotState = ST_GREEN_PICK;  }
+            if      (col == COLOR_RED)   { Serial.println(F("[STATE] RED → AVOID"));      robotState = ST_RED_AVOID;   }
+            else if (col == COLOR_GREEN) { Serial.println(F("[STATE] GREEN → PICK"));     robotState = ST_GREEN_PICK;  }
             else                         { Serial.println(F("[STATE] Unknown → FOLLOW")); robotState = ST_LINE_FOLLOW; }
             break;
         }
 
-        // ── Bypass red cube (blocking U-shape maneuver) ───────────────────
+        // ── Bypass red cube (blocking U-shape maneuver) ─────────────────────────
         case ST_RED_AVOID:
             robot_executeRedAvoid();
             robotState = ST_LINE_FOLLOW;
             break;
 
-        // ── Pick green cube (blocking; gate closes over cube) ─────────────
+        // ── Pick green cube (blocking; gate closes over cube) ──────────────────
+        // BUG-02 FIX:
+        //   Removed the `servo_close()` call that was here before
+        //   robot_executeGreenPick().  robot_executeGreenPick() already
+        //   calls servo_close() as its very first action (see robot.cpp).
+        //   Calling it twice caused the servo to receive the same angle
+        //   command twice in rapid succession, producing a brief jerk that
+        //   could dislodge the cube from the pocket during the approach.
+        //   The single authoritative servo_close() now lives exclusively
+        //   inside robot_executeGreenPick().
         case ST_GREEN_PICK:
-            servo_close();
-            robot_executeGreenPick();
+            robot_executeGreenPick();          // servo_close() is inside here
             cubeOnBoard = true;
             Serial.println(F("[STATE] Cube secured → continue to end zone"));
             robotState = ST_LINE_FOLLOW;
             break;
     }
 
-    // ── End-zone drop ─────────────────────────────────────────────────────
+    // ── End-zone drop ────────────────────────────────────────────────────────────
     // All 5 sensors dark + clear ahead = robot has gone past the end of line
     if (cubeOnBoard &&
         sensors_allDark() &&

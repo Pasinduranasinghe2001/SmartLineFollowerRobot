@@ -9,20 +9,20 @@
 #include "ultrasonic.h"
 #include "servo_gate.h"
 
-// ── Top-level robot state ─────────────────────────────────────────────────
+// ── Top-level robot state ──────────────────────────────────────────────────────
 RobotState robotState = ST_LINE_FOLLOW;
 
-// ── PID state ─────────────────────────────────────────────────────────────
+// ── PID state ─────────────────────────────────────────────────────────────────
 static float pidPos      = 0.0f;
 static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
 static float lineWidth   = 0.0f;
 
-// ── Lost-line recovery state ──────────────────────────────────────────────
+// ── Lost-line recovery state ──────────────────────────────────────────────────
 enum RecoveryMode {
     REC_IDLE, REC_REVERSE, REC_FORWARD_CHECK, REC_TURN_LEFT, REC_TURN_RIGHT
 };
-static RecoveryMode recMode    = REC_IDLE;
+static RecoveryMode  recMode    = REC_IDLE;
 static unsigned long recStartMs = 0;
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ void robot_runLostLineRecovery() {
 // ─────────────────────────────────────────────────────────────────────────
 void robot_executeRedAvoid() {
     Serial.println(F("[AVOID] ── RED AVOIDANCE START ──"));
-    int   spd = P.avoidSpeed;
+    int spd = P.avoidSpeed;
 
     Serial.println(F("[AVOID] 1. Reverse"));
     motors_driveBackward(spd);
@@ -190,25 +190,32 @@ void robot_executeRedAvoid() {
 // ─────────────────────────────────────────────────────────────────────────
 //  GREEN CUBE PICK  (blocking)
 //
-//  Steps:
-//    1. Creep forward until ultrasonic ≤ greenPickDist
-//    2. Stop – gate was already CLOSED when cube entered pocket
-//    3. (Gate is already holding – no extra action needed for single-servo)
-//    4. Resume line following; drop at end zone using robot_dropCube()
+//  BUG-02 FIX:
+//  The ONLY servo_close() call is here, at the top of this function.
+//  main.cpp no longer calls servo_close() before invoking this function.
+//  Having two rapid servo_close() calls to the same angle caused a
+//  brief torque spike (jerk) that could knock the cube out of the pocket
+//  during the approach phase.
 //
-//  For a single DROP-GATE servo:
-//    The cube is passively scooped into the front pocket as the robot
-//    drives over it.  The gate is CLOSED (home angle) before the robot
-//    reaches the cube, so it latches automatically.
-//    At the drop zone, main.cpp calls servo_open() to release.
+//  Gate ownership rule (single source of truth):
+//    • robot_executeGreenPick()  → closes the gate (owns CLOSE)
+//    • main.cpp end-zone drop    → opens then closes (owns OPEN + final CLOSE)
+//    • setup()                   → closes gate once at boot (safe, servo not moving yet)
+//
+//  Steps:
+//    1. servo_close()  – ensure gate is closed before cube enters pocket
+//    2. Creep forward until ultrasonic ≤ greenPickDist
+//    3. Stop – cube is now inside the pocket, held by the closed gate
+//    4. Resume line following; drop at end zone handled by main.cpp
 // ─────────────────────────────────────────────────────────────────────────
 void robot_executeGreenPick() {
     Serial.println(F("[PICK] ── GREEN PICK START ──"));
 
-    // Ensure gate is closed before approach
+    // ── Step 1: single authoritative gate close ────────────────────────────
     servo_close();
+    Serial.println(F("[PICK] Gate closed. Approaching cube..."));
 
-    Serial.println(F("[PICK] 1. Approach to pick distance"));
+    // ── Step 2: creep forward until within pick distance ──────────────────
     unsigned long deadline = millis() + 5000UL;
     while (millis() < deadline) {
         float d = ultrasonic_getDistance();
@@ -218,10 +225,11 @@ void robot_executeGreenPick() {
         motors_setRight(P.pickApproachSpeed, true);
         delay(20);
     }
+
+    // ── Step 3: stop – cube is now inside the pocket ─────────────────────
     motors_stop();
     delay(300);
 
-    // Gate is already closed – cube is now inside the pocket
     Serial.println(F("[PICK] Cube secured. Resuming line follow."));
     robot_resetRecovery();
 }
