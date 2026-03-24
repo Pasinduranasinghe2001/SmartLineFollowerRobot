@@ -1,0 +1,8 @@
+.vscode
+.pio
+.env
+*.log
+*.bin
+*.hex
+*.elf
+*.map   
