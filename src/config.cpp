@@ -1,47 +1,39 @@
 // =========================================================================
 //  config.cpp  –  Single authoritative definitions for all pin constants
-//  EC6090 Mini-Project  |  ESP32 DevKit
+//  EC6090 Mini-Project  |  ESP32 DevKitC v4  (30-PIN WROOM-32)
 //
-//  BUG-01 FIX:
-//  This file provides ONE definition for every symbol declared `extern`
-//  in include/config.h.  Before this fix, all constants were declared
-//  `static const` inside config.h, which caused every .cpp translation
-//  unit that included config.h to silently get its own private copy.
-//  For scalar ints the compiler can optimise them away, but for the
-//  IR_PIN[5] array each translation unit held a separate copy in flash,
-//  wasting memory and risking subtle aliasing when a pointer to the array
-//  was passed across compilation units.
+//  ⚠  PIN REMAP for 30-pin board (GPIO 22 & 23 not on header):
+//       PIN_IN4  : was GPIO 23  →  now GPIO 17
+//       PIN_SERVO: was GPIO 22  →  now GPIO 16
 //
-//  Rule of thumb:
-//    Header  →  `extern const`  (declaration – no storage allocated)
-//    This file  →  `const`  (definition – storage allocated exactly once)
+//  To revert to 38-pin assignments change 17→23 and 16→22 here only.
 // =========================================================================
 #include "config.h"
 
-// ─── IR Sensors ───────────────────────────────────────────────────────────────
-//  S1(left) … S5(right) — GPIO 34, 35, 32, 33, 25 are input-only on ESP32
+// ── IR Sensors ────────────────────────────────────────────────────────────
+//  GPIO 34,35,32,33,25 = input-only ADC pins, all present on 30-pin board
 const int IR_PIN[5] = { 34, 35, 32, 33, 25 };
 
-// ─── Right Motor  (L298N channel A) ──────────────────────────────────────
+// ── Right Motor  (L298N channel A) ────────────────────────────────────────
 const int PIN_ENA = 14;   // PWM enable – LEDC channel 0
-const int PIN_IN1 = 27;   // direction bit A
-const int PIN_IN2 = 26;   // direction bit B
+const int PIN_IN1 = 27;
+const int PIN_IN2 = 26;
 
-// ─── Left Motor  (L298N channel B) ───────────────────────────────────────
+// ── Left Motor  (L298N channel B) ─────────────────────────────────────────
 const int PIN_ENB = 12;   // PWM enable – LEDC channel 1
-const int PIN_IN3 = 13;   // direction bit A
-const int PIN_IN4 = 23;   // direction bit B
+const int PIN_IN3 = 13;
+const int PIN_IN4 = 17;   // ⚠ REMAPPED from 23 → 17 (23 not on 30-pin header)
 
-// ─── Servo ────────────────────────────────────────────────────────────────────
-const int PIN_SERVO = 22; // SG90 / MG90S signal pin
+// ── Servo ──────────────────────────────────────────────────────────────────
+const int PIN_SERVO = 16; // ⚠ REMAPPED from 22 → 16 (22 not on 30-pin header)
 
-// ─── HC-SR04 Ultrasonic ──────────────────────────────────────────────────
-const int PIN_TRIG =  5;  // trigger output (10 µs pulse)
-const int PIN_ECHO = 18;  // echo input  ⚠ 5V → use voltage divider → 3.3V
+// ── HC-SR04 Ultrasonic ────────────────────────────────────────────────────
+const int PIN_TRIG =  5;
+const int PIN_ECHO = 18;  // ⚠ 5V output – use voltage divider → 3.3V
 
-// ─── TCS3200 Color Sensor ────────────────────────────────────────────────
-const int PIN_CS_S0  =  4;  // frequency scale select 0
-const int PIN_CS_S1  =  2;  // frequency scale select 1  ⚠ strapping pin
-const int PIN_CS_S2  = 15;  // photodiode filter select 0
-const int PIN_CS_S3  = 21;  // photodiode filter select 1
-const int PIN_CS_OUT = 19;  // square wave frequency output (3.3V safe)
+// ── TCS3200 Color Sensor ──────────────────────────────────────────────────
+const int PIN_CS_S0  =  4;
+const int PIN_CS_S1  =  2;  // boot-strapping pin – keep LOW during flash
+const int PIN_CS_S2  = 15;
+const int PIN_CS_S3  = 21;
+const int PIN_CS_OUT = 19;
