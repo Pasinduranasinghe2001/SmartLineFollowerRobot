@@ -1,5 +1,10 @@
 // =========================================================================
-//  robot.cpp  –  PID line follow + lost-line recovery + obstacle + pick
+//  robot.cpp  -  PID line follow + lost-line recovery + obstacle + pick
+//
+//  MD0370 sensor changes:
+//    - sensors_computeWidth() removed (no analog strength data)
+//    - width compensation block removed from robot_followLine()
+//    - sensors_anyWhite() -> sensors_anyOn() (renamed in sensors.h)
 // =========================================================================
 #include <Arduino.h>
 #include "robot.h"
@@ -9,86 +14,64 @@
 #include "ultrasonic.h"
 #include "servo_gate.h"
 
-// ── Top-level robot state ─────────────────────────────────────────────────────────
+// Top-level robot state
 RobotState robotState = ST_LINE_FOLLOW;
 
-// ── PID state ───────────────────────────────────────────────────────────────────
+// PID state
 static float pidPos      = 0.0f;
 static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
-static float lineWidth   = 0.0f;
+// NOTE: lineWidth removed - MD0370 digital sensors have no analog strength
 
-// ── Lost-line recovery state ──────────────────────────────────────────────────────
+// Lost-line recovery state
 enum RecoveryMode {
     REC_IDLE, REC_REVERSE, REC_FORWARD_CHECK, REC_TURN_LEFT, REC_TURN_RIGHT
 };
 static RecoveryMode  recMode    = REC_IDLE;
 static unsigned long recStartMs = 0;
 
-// ───────────────────────────────────────────────────────────────────────────
 void robot_resetRecovery() {
     recMode    = REC_IDLE;
     recStartMs = 0;
 }
 
-// ───────────────────────────────────────────────────────────────────────────
+// =========================================================================
 //  PID LINE FOLLOWING
 //
-//  FIX C3 — constrain wheel outputs to [minSpeed, 255] not [0, 255]
-//  ─────────────────────────────────────────────────────────────────────
-//  PROBLEM (before fix):
-//    constrain(dynBase ± correction, 0, 255)
-//    On a sharp curve, correction can exceed dynBase so the inner wheel
-//    output goes to 0 (full stall). The robot then pivots on one wheel
-//    instead of curving, which:
-//      • Looks like the robot slows or jerks at every corner
-//      • Causes the chassis to skid sideways, overshooting the line
-//      • Triggers a false lost-line event, dropping speed to forwardRecoverSpeed
+//  FIX C3: constrain wheel outputs to [minSpeed, 255] not [0, 255]
+//  Inner wheel guaranteed to keep rolling through corners.
 //
-//  FIX:
-//    constrain(dynBase ± correction, P.minSpeed, 255)
-//    The inner wheel is guaranteed at least P.minSpeed (40 PWM ≈ 16%)
-//    so both wheels always roll. The robot curves smoothly through
-//    corners at maintained forward momentum instead of pivot-jerking.
+//  MD0370 note: width compensation block removed.
+//  Digital sensors give 0/1 only - no analog strength to estimate line
+//  width. PID correction is applied directly.
 //
-//  error = filteredPos  (positive = line is to the right of centre)
-//  correction added to left wheel, subtracted from right wheel
-//  → positive correction steers robot rightward to follow line
-// ─────────────────────────────────────────────────────────────────────
+//  error = filteredPos (positive = line is right of centre)
+//  positive correction -> steer right to re-centre
+// =========================================================================
 void robot_followLine() {
     pidPos      = sensors_computePosition();
     filteredPos = P.posFilter * filteredPos + (1.0f - P.posFilter) * pidPos;
-    lineWidth   = sensors_computeWidth();
 
     float error      = filteredPos;
     float derivative = error - lastError;
-
-    // Width compensation: reduce gain on thick lines / intersections
-    float wComp = 1.0f;
-    if (lineWidth > 1.5f) {
-        wComp = 1.0f / (1.0f + P.widthKp * 0.08f * (lineWidth - 1.5f));
-        if (wComp < 0.45f) wComp = 0.45f;
-    }
-
-    float correction = (P.kp * error + P.kd * derivative) * wComp;
+    float correction = P.kp * error + P.kd * derivative;
     lastError = error;
 
-    // Curve speed reduction — tunable via SET SPEEDDROP
+    // Speed drop on curves - tunable via SET SPEEDDROP
     int dynBase = P.baseSpeed - (int)(fabsf(error) * P.speedDrop);
     dynBase = constrain(dynBase, P.minSpeed, P.baseSpeed);
 
     // FIX C3: lower bound is P.minSpeed, not 0
-    // Inner wheel guaranteed to keep rolling through corners
     int leftSpd  = constrain(dynBase + (int)correction, P.minSpeed, 255);
     int rightSpd = constrain(dynBase - (int)correction, P.minSpeed, 255);
 
-    motors_setLeft(leftSpd,  true);
+    motors_setLeft(leftSpd,   true);
     motors_setRight(rightSpd, true);
 }
 
-// ───────────────────────────────────────────────────────────────────────────
+// =========================================================================
 //  LOST-LINE RECOVERY  (4-stage state machine)
-// ───────────────────────────────────────────────────────────────────────────
+// =========================================================================
 static void _reverseStage() {
     int fastRev = constrain(P.reverseSpeed + P.reverseBiasDelta, 0, 255);
     int slowRev = constrain(P.reverseSpeed - P.reverseBiasDelta, 0, 255);
@@ -98,7 +81,8 @@ static void _reverseStage() {
     else                                 motors_driveBackward(P.reverseSpeed);
 
     sensors_read();
-    if (sensors_anyWhite() || millis() - recStartMs > P.timeoutRight) {
+    // FIX: sensors_anyWhite() -> sensors_anyOn()
+    if (sensors_anyOn() || millis() - recStartMs > P.timeoutRight) {
         recMode    = REC_FORWARD_CHECK;
         recStartMs = millis();
     }
@@ -148,11 +132,11 @@ void robot_runLostLineRecovery() {
     }
 }
 
-// ───────────────────────────────────────────────────────────────────────────
+// =========================================================================
 //  RED CUBE AVOIDANCE  (time-based, blocking)
-// ───────────────────────────────────────────────────────────────────────────
+// =========================================================================
 void robot_executeRedAvoid() {
-    Serial.println(F("[AVOID] ── RED AVOIDANCE START ──"));
+    Serial.println(F("[AVOID] RED AVOIDANCE START"));
     int spd = P.avoidSpeed;
 
     Serial.println(F("[AVOID] 1. Reverse"));
@@ -160,7 +144,7 @@ void robot_executeRedAvoid() {
     delay(P.reverseAvoidTime);
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] 2. Pivot LEFT 90°"));
+    Serial.println(F("[AVOID] 2. Pivot LEFT 90 deg"));
     { unsigned long t = millis();
       while (millis()-t < P.turn90AvoidTime) { motors_pivotLeft(spd); delay(5); } }
     motors_stop(); delay(150);
@@ -170,7 +154,7 @@ void robot_executeRedAvoid() {
     delay(P.forwardAvoidTime);
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] 4. Pivot RIGHT 90°"));
+    Serial.println(F("[AVOID] 4. Pivot RIGHT 90 deg"));
     { unsigned long t = millis();
       while (millis()-t < P.turn90AvoidTime) { motors_pivotRight(spd); delay(5); } }
     motors_stop(); delay(150);
@@ -180,26 +164,27 @@ void robot_executeRedAvoid() {
     delay(P.forwardAvoidTime);
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] 6. Pivot LEFT → find line"));
+    Serial.println(F("[AVOID] 6. Pivot LEFT - find line"));
     { unsigned long t = millis();
       while (millis()-t < P.timeoutRight) {
           motors_pivotLeft(P.searchSpeed);
           sensors_read();
-          if (sensors_isPathFoundPattern() || sensors_anyWhite()) break;
+          // FIX: sensors_anyWhite() -> sensors_anyOn()
+          if (sensors_isPathFoundPattern() || sensors_anyOn()) break;
           delay(5);
       } }
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] Done → resume line follow"));
+    Serial.println(F("[AVOID] Done - resume line follow"));
     robot_resetRecovery();
     lastSeenSide = SIDE_UNKNOWN;
 }
 
-// ───────────────────────────────────────────────────────────────────────────
+// =========================================================================
 //  GREEN CUBE PICK  (blocking)
-// ───────────────────────────────────────────────────────────────────────────
+// =========================================================================
 void robot_executeGreenPick() {
-    Serial.println(F("[PICK] ── GREEN PICK START ──"));
+    Serial.println(F("[PICK] GREEN PICK START"));
 
     servo_close();
     Serial.println(F("[PICK] Gate confirmed closed. Approaching cube..."));
