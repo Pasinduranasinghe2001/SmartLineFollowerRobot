@@ -5,6 +5,11 @@
 //    - sensors_computeWidth() removed (no analog strength data)
 //    - width compensation block removed from robot_followLine()
 //    - sensors_anyWhite() -> sensors_anyOn() (renamed in sensors.h)
+//
+//  Green pick fixes:
+//    FIX-P1: servo_open() now called after reaching pick distance
+//    FIX-P2: ultrasonic median filter + spike rejection + hysteresis count
+//    FIX-P3: reverse after pick + PICK_COOLDOWN_MS to suppress re-detect
 // =========================================================================
 #include <Arduino.h>
 #include "robot.h"
@@ -21,7 +26,6 @@ RobotState robotState = ST_LINE_FOLLOW;
 static float pidPos      = 0.0f;
 static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
-// NOTE: lineWidth removed - MD0370 digital sensors have no analog strength
 
 // Lost-line recovery state
 enum RecoveryMode {
@@ -30,6 +34,15 @@ enum RecoveryMode {
 static RecoveryMode  recMode    = REC_IDLE;
 static unsigned long recStartMs = 0;
 
+// FIX-P3: cooldown after pick to suppress immediate re-detection
+static unsigned long _pickDoneMs   = 0;
+static const unsigned long PICK_COOLDOWN_MS = 2500UL;
+
+bool robot_pickCooldownActive() {
+    if (_pickDoneMs == 0) return false;
+    return (millis() - _pickDoneMs < PICK_COOLDOWN_MS);
+}
+
 void robot_resetRecovery() {
     recMode    = REC_IDLE;
     recStartMs = 0;
@@ -37,16 +50,6 @@ void robot_resetRecovery() {
 
 // =========================================================================
 //  PID LINE FOLLOWING
-//
-//  FIX C3: constrain wheel outputs to [minSpeed, 255] not [0, 255]
-//  Inner wheel guaranteed to keep rolling through corners.
-//
-//  MD0370 note: width compensation block removed.
-//  Digital sensors give 0/1 only - no analog strength to estimate line
-//  width. PID correction is applied directly.
-//
-//  error = filteredPos (positive = line is right of centre)
-//  positive correction -> steer right to re-centre
 // =========================================================================
 void robot_followLine() {
     pidPos      = sensors_computePosition();
@@ -57,11 +60,9 @@ void robot_followLine() {
     float correction = P.kp * error + P.kd * derivative;
     lastError = error;
 
-    // Speed drop on curves - tunable via SET SPEEDDROP
     int dynBase = P.baseSpeed - (int)(fabsf(error) * P.speedDrop);
     dynBase = constrain(dynBase, P.minSpeed, P.baseSpeed);
 
-    // FIX C3: lower bound is P.minSpeed, not 0
     int leftSpd  = constrain(dynBase + (int)correction, P.minSpeed, 255);
     int rightSpd = constrain(dynBase - (int)correction, P.minSpeed, 255);
 
@@ -81,7 +82,6 @@ static void _reverseStage() {
     else                                 motors_driveBackward(P.reverseSpeed);
 
     sensors_read();
-    // FIX: sensors_anyWhite() -> sensors_anyOn()
     if (sensors_anyOn() || millis() - recStartMs > P.timeoutRight) {
         recMode    = REC_FORWARD_CHECK;
         recStartMs = millis();
@@ -169,7 +169,6 @@ void robot_executeRedAvoid() {
       while (millis()-t < P.timeoutRight) {
           motors_pivotLeft(P.searchSpeed);
           sensors_read();
-          // FIX: sensors_anyWhite() -> sensors_anyOn()
           if (sensors_isPathFoundPattern() || sensors_anyOn()) break;
           delay(5);
       } }
@@ -181,26 +180,102 @@ void robot_executeRedAvoid() {
 }
 
 // =========================================================================
-//  GREEN CUBE PICK  (blocking)
+//  ULTRASONIC MEDIAN HELPER
+//  Takes N readings, sorts them, returns the middle value.
+//  Readings above SPIKE_LIMIT are treated as invalid and clamped to
+//  SPIKE_LIMIT so they sink to the top of the sorted array and the
+//  median is unaffected.
 // =========================================================================
+static const float US_SPIKE_LIMIT = 40.0f;   // cm - anything above = bad echo
+static const int   US_SAMPLES     = 5;
+
+static float _usMedian() {
+    float buf[US_SAMPLES];
+    for (int i = 0; i < US_SAMPLES; i++) {
+        float r = ultrasonic_getDistance();
+        buf[i]  = (r > US_SPIKE_LIMIT) ? US_SPIKE_LIMIT : r;
+        delay(4);   // ~4 ms between pings avoids echo overlap
+    }
+    // Bubble sort (tiny array - fine on ESP32)
+    for (int i = 0; i < US_SAMPLES - 1; i++)
+        for (int j = 0; j < US_SAMPLES - 1 - i; j++)
+            if (buf[j] > buf[j+1]) { float t = buf[j]; buf[j] = buf[j+1]; buf[j+1] = t; }
+    return buf[US_SAMPLES / 2];
+}
+
+// =========================================================================
+//  GREEN CUBE PICK  (blocking)
+//
+//  FIX-P1: servo_open() called once cube is secured (gripper release
+//          was completely missing before - gate stayed closed forever)
+//
+//  FIX-P2: ultrasonic median filter (_usMedian) replaces raw single
+//          readings. Also requires CLOSE_COUNT consecutive readings
+//          inside greenPickDist before stopping, so one bad echo can't
+//          trigger a premature stop.
+//
+//  FIX-P3: after securing the cube:
+//          a) reverse away 400 ms so sensor clears the cube body
+//          b) set _pickDoneMs = millis() to start cooldown window
+//          c) main.cpp checks robot_pickCooldownActive() and skips
+//             the obstacle branch during cooldown
+//
+//  Servo angles (from test_servo_diag):
+//    1 deg   = gripper OPEN  (cube drops into pocket / released)
+//    110 deg = gripper CLOSED (cube gripped / held in pocket)
+// =========================================================================
+static const int CLOSE_COUNT = 3;  // consecutive good readings required
+
 void robot_executeGreenPick() {
     Serial.println(F("[PICK] GREEN PICK START"));
 
-    servo_close();
-    Serial.println(F("[PICK] Gate confirmed closed. Approaching cube..."));
+    // FIX-P1: Close gripper FIRST to be ready to capture the cube
+    // 110 deg = closed/grip position (from test_servo_diag)
+    servo_close();   // goes to P.servoHomeAngle = 110 deg
+    Serial.println(F("[PICK] Gripper closed (110 deg). Approaching cube..."));
 
     unsigned long deadline = millis() + 5000UL;
+    int closeStreak = 0;
+
     while (millis() < deadline) {
-        float d = ultrasonic_getDistance();
-        Serial.printf("[PICK] dist=%.1f cm\n", d);
-        if (d <= P.greenPickDist) break;
-        motors_setLeft(P.pickApproachSpeed,  true);
-        motors_setRight(P.pickApproachSpeed, true);
-        delay(20);
+        // FIX-P2: use median of 5 readings instead of single raw reading
+        float d = _usMedian();
+        Serial.printf("[PICK] dist=%.1f cm (median)\n", d);
+
+        if (d <= P.greenPickDist) {
+            closeStreak++;
+            Serial.printf("[PICK] In range %d/%d\n", closeStreak, CLOSE_COUNT);
+            if (closeStreak >= CLOSE_COUNT) break;   // confirmed, not a spike
+        } else {
+            closeStreak = 0;   // reset if reading jumps back up
+            motors_setLeft(P.pickApproachSpeed,  true);
+            motors_setRight(P.pickApproachSpeed, true);
+        }
     }
 
     motors_stop();
-    delay(300);
+    delay(200);
+
+    // FIX-P1: open gripper to release / drop cube into pocket
+    // 1 deg = open position (from test_servo_diag)
+    Serial.println(F("[PICK] Cube in range - opening gripper (1 deg)."));
+    servo_open();    // goes to P.servoPickAngle = 1 deg
+    delay(600);      // allow arm to fully sweep to 1 deg
+
+    // Re-close to hold cube in pocket during transport
+    Serial.println(F("[PICK] Re-closing to hold cube for transport (110 deg)."));
+    servo_close();   // back to 110 deg to grip cube
+    delay(400);
+
+    // FIX-P3a: reverse to clear the cube body from the ultrasonic cone
+    Serial.println(F("[PICK] Reversing to clear sensor..."));
+    motors_driveBackward(P.reverseSpeed);
+    delay(400);
+    motors_stop();
+    delay(150);
+
+    // FIX-P3b: start cooldown clock - main.cpp ignores obstacle for 2.5 s
+    _pickDoneMs = millis();
 
     Serial.println(F("[PICK] Cube secured. Resuming line follow."));
     robot_resetRecovery();
