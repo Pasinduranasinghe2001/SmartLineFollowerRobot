@@ -17,7 +17,6 @@ static float pidPos      = 0.0f;
 static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
 static float lineWidth   = 0.0f;
-static float speedDrop    = 4.0f;   // multiplier for PID speed drop in curves (tune via SET SPEEDDROP <value>)
 
 // ── Lost-line recovery state ──────────────────────────────────────────────────────
 enum RecoveryMode {
@@ -35,26 +34,22 @@ void robot_resetRecovery() {
 // ───────────────────────────────────────────────────────────────────────────
 //  PID LINE FOLLOWING
 //
-//  BUG-6 FIX — curve speed-drop multiplier reduced 8.0f → 4.0f
+//  FIX C3 — constrain wheel outputs to [minSpeed, 255] not [0, 255]
 //  ─────────────────────────────────────────────────────────────────────
 //  PROBLEM (before fix):
-//    dynBase formula: P.baseSpeed - (int)(fabsf(error) * 8.0f)
-//    The 8.0f multiplier was originally tuned when baseSpeed = 110.
-//    After the speed parameter update (baseSpeed = 160), the same
-//    multiplier causes a disproportionately large speed reduction:
-//      • At max error (4.0) the drop was 32 PWM — 20% of base
-//      • Even mild curves (error 2.0) dropped 16 PWM — 10% of base
-//    Combined with the low-pass filter (posFilter=0.65) keeping
-//    filteredPos non-zero between corrections, the robot spent most
-//    of its time at well below baseSpeed even on near-straight sections.
-//    The result was a noticeably sluggish robot despite baseSpeed=160.
+//    constrain(dynBase ± correction, 0, 255)
+//    On a sharp curve, correction can exceed dynBase so the inner wheel
+//    output goes to 0 (full stall). The robot then pivots on one wheel
+//    instead of curving, which:
+//      • Looks like the robot slows or jerks at every corner
+//      • Causes the chassis to skid sideways, overshooting the line
+//      • Triggers a false lost-line event, dropping speed to forwardRecoverSpeed
 //
 //  FIX:
-//    Reduced multiplier to P.speedDrop (default 4.0f, live-tunable via
-//    SET SPEEDDROP <value>). At max error (4.0) the drop is now 16 PWM
-//    (10% of 160) which is appropriate for cornering without excessive
-//    slowdown on straights.
-//    P.speedDrop is added to the Params struct and saved to EEPROM.
+//    constrain(dynBase ± correction, P.minSpeed, 255)
+//    The inner wheel is guaranteed at least P.minSpeed (40 PWM ≈ 16%)
+//    so both wheels always roll. The robot curves smoothly through
+//    corners at maintained forward momentum instead of pivot-jerking.
 //
 //  error = filteredPos  (positive = line is to the right of centre)
 //  correction added to left wheel, subtracted from right wheel
@@ -78,14 +73,14 @@ void robot_followLine() {
     float correction = (P.kp * error + P.kd * derivative) * wComp;
     lastError = error;
 
-    // BUG-6 FIX: use P.speedDrop (default 4.0) instead of hardcoded 8.0
-    // Tune live: SET SPEEDDROP 3   (less slowdown in curves)
-    //            SET SPEEDDROP 6   (more slowdown in sharp corners)
+    // Curve speed reduction — tunable via SET SPEEDDROP
     int dynBase = P.baseSpeed - (int)(fabsf(error) * P.speedDrop);
     dynBase = constrain(dynBase, P.minSpeed, P.baseSpeed);
 
-    int leftSpd  = constrain(dynBase + (int)correction, 0, 255);
-    int rightSpd = constrain(dynBase - (int)correction, 0, 255);
+    // FIX C3: lower bound is P.minSpeed, not 0
+    // Inner wheel guaranteed to keep rolling through corners
+    int leftSpd  = constrain(dynBase + (int)correction, P.minSpeed, 255);
+    int rightSpd = constrain(dynBase - (int)correction, P.minSpeed, 255);
 
     motors_setLeft(leftSpd,  true);
     motors_setRight(rightSpd, true);
@@ -155,15 +150,6 @@ void robot_runLostLineRecovery() {
 
 // ───────────────────────────────────────────────────────────────────────────
 //  RED CUBE AVOIDANCE  (time-based, blocking)
-//
-//  Maneuver:
-//    1. Reverse  ~7 cm
-//    2. Pivot LEFT 90°
-//    3. Drive forward past obstacle (~15 cm)
-//    4. Pivot RIGHT 90°  (parallel to original path)
-//    5. Drive forward to re-cross line (~15 cm)
-//    6. Pivot LEFT until line found
-//    7. Resume PID
 // ───────────────────────────────────────────────────────────────────────────
 void robot_executeRedAvoid() {
     Serial.println(F("[AVOID] ── RED AVOIDANCE START ──"));
@@ -211,24 +197,6 @@ void robot_executeRedAvoid() {
 
 // ───────────────────────────────────────────────────────────────────────────
 //  GREEN CUBE PICK  (blocking)
-//
-//  BUG-02 FIX:
-//  The ONLY servo_close() call is here, at the top of this function.
-//  main.cpp no longer calls servo_close() before invoking this function.
-//  Having two rapid servo_close() calls to the same angle caused a
-//  brief torque spike (jerk) that could knock the cube out of the pocket
-//  during the approach phase.
-//
-//  Gate ownership rule (single source of truth):
-//    • robot_executeGreenPick()  → closes the gate (owns CLOSE)
-//    • main.cpp end-zone drop    → opens then closes (owns OPEN + final CLOSE)
-//    • setup()                   → servo_init() reaches home at boot only
-//
-//  Steps:
-//    1. servo_close()  – ensure gate closed before cube enters pocket
-//    2. Creep forward until ultrasonic ≤ greenPickDist
-//    3. Stop – cube is now inside the pocket, held by the closed gate
-//    4. Resume line following; drop at end zone handled by main.cpp
 // ───────────────────────────────────────────────────────────────────────────
 void robot_executeGreenPick() {
     Serial.println(F("[PICK] ── GREEN PICK START ──"));

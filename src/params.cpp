@@ -1,5 +1,14 @@
 // =========================================================================
 //  params.cpp  –  Default values, EEPROM, serial command handler
+//
+//  Speed-drop fixes applied to defaults (see params.h for cause comments):
+//    C1  leftTrim        8  →  0      asymmetry drag removed
+//    C2  posFilter    0.65  →  0.50   filter settles faster on straights
+//    C4  kd           10.0  →  5.0    derivative spikes reduced
+//    C5  forwardRecoverSpeed  60 → 100  brief line-loss speed drop reduced
+//    BUG-6  speedDrop new field, default 4.0  (was hardcoded 8.0)
+//
+//  C3 (wheel output constrained to [minSpeed,255]) is fixed in robot.cpp.
 // =========================================================================
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -7,19 +16,19 @@
 #include "config.h"
 #include "sensors.h"    // for calBlack / calWhite / calThresh arrays
 
-// ── Default parameter values ──────────────────────────────────────────────
+// ── Default parameter values ─────────────────────────────────────────────────────────
 Params P = {
-    // PID / line-follow
+    // ── PID / line-follow ─────────────────────────────────────────────────────
     160,    // baseSpeed
     210,    // fastSpeed
-    120,     // slowSpeed
+    120,    // slowSpeed
     130,    // turnSpeed
     150,    // sharpSpeed
     110,    // recoverSpeed
     100,    // searchSpeed
     90,     // reverseSpeed
     18,     // reverseBiasDelta
-    60,     // forwardRecoverSpeed
+    100,    // forwardRecoverSpeed   FIX C5: was 60 (37% of base) → 100 (63%)
     40,     // minSpeed
 
     1800UL, // timeoutLeft  (ms)
@@ -27,14 +36,15 @@ Params P = {
     160UL,  // forwardRecoverTime (ms)
 
     16.0f,  // kp
-    10.0f,  // kd
-    0.65f,  // posFilter
+    5.0f,   // kd            FIX C4: was 10.0 → 5.0 (derivative spikes halved)
+    0.50f,  // posFilter     FIX C2: was 0.65 → 0.50 (settles faster on straights)
     6.0f,   // widthKp
+    4.0f,   // speedDrop     BUG-6: new field, was hardcoded 8.0 in robot.cpp
 
-    8,      // leftTrim
+    0,      // leftTrim      FIX C1: was 8 (created asymmetry → PID drag)
     0,      // rightTrim
 
-    // Obstacle / color / servo
+    // ── Obstacle / color / servo ───────────────────────────────────────────────
     70,     // approachSpeed
     100,    // avoidSpeed
     50,     // pickApproachSpeed
@@ -54,10 +64,10 @@ Params P = {
     183     // servoPickAngle  (gate OPEN)
 };
 
-// ─────────────────────────────────────────────────────────────────────────
-void params_init() { /* nothing – defaults already set above */ }
+// ───────────────────────────────────────────────────────────────────────────
+void params_init() { /* defaults already set above */ }
 
-// ── EEPROM ────────────────────────────────────────────────────────────────
+// ── EEPROM ─────────────────────────────────────────────────────────────────────────
 void params_saveEEPROM() {
     EEPROM.write(EEPROM_ADDR_MAGIC, EEPROM_MAGIC);
     int addr = EEPROM_ADDR_CAL;
@@ -84,9 +94,9 @@ bool params_loadEEPROM() {
     return true;
 }
 
-// ── Status print ──────────────────────────────────────────────────────────
+// ── Status print ──────────────────────────────────────────────────────────────────
 void params_printStatus() {
-    Serial.println(F("──────── PID / LINE-FOLLOW ────────"));
+    Serial.println(F("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 PID / LINE-FOLLOW \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
     Serial.printf("BASE=%d FAST=%d SLOW=%d\n", P.baseSpeed, P.fastSpeed, P.slowSpeed);
     Serial.printf("TURN=%d SHARP=%d RECOVER=%d SEARCH=%d\n",
                   P.turnSpeed, P.sharpSpeed, P.recoverSpeed, P.searchSpeed);
@@ -94,11 +104,11 @@ void params_printStatus() {
                   P.reverseSpeed, P.reverseBiasDelta, P.forwardRecoverSpeed, P.minSpeed);
     Serial.printf("TIMEOUT_L=%lu TIMEOUT_R=%lu FORWARD_TIME=%lu\n",
                   P.timeoutLeft, P.timeoutRight, P.forwardRecoverTime);
-    Serial.printf("KP=%.2f KD=%.2f FILTER=%.2f WIDTHKP=%.2f\n",
-                  P.kp, P.kd, P.posFilter, P.widthKp);
+    Serial.printf("KP=%.2f KD=%.2f FILTER=%.2f WIDTHKP=%.2f SPEEDDROP=%.2f\n",
+                  P.kp, P.kd, P.posFilter, P.widthKp, P.speedDrop);
     Serial.printf("LTRIM=%d RTRIM=%d\n", P.leftTrim, P.rightTrim);
 
-    Serial.println(F("──────── OBSTACLE / COLOR / SERVO ────────"));
+    Serial.println(F("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 OBSTACLE / COLOR / SERVO \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
     Serial.printf("APPSPD=%d AVDSPD=%d PCKSPD=%d\n",
                   P.approachSpeed, P.avoidSpeed, P.pickApproachSpeed);
     Serial.printf("REVTIME=%lu FWDTIME=%lu T90TIME=%lu\n",
@@ -109,7 +119,7 @@ void params_printStatus() {
     Serial.printf("SVHOME=%d SVPICK=%d\n", P.servoHomeAngle, P.servoPickAngle);
 }
 
-// ── Serial command handler ────────────────────────────────────────────────
+// ── Serial command handler ─────────────────────────────────────────────────────
 void params_handleSerial() {
     if (!Serial.available()) return;
 
@@ -152,6 +162,7 @@ void params_handleSerial() {
         else if (key == "KD")            P.kd                  = val.toFloat();
         else if (key == "FILTER")        P.posFilter           = val.toFloat();
         else if (key == "WIDTHKP")       P.widthKp             = val.toFloat();
+        else if (key == "SPEEDDROP")     P.speedDrop           = val.toFloat();
         else if (key == "LTRIM")         P.leftTrim            = val.toInt();
         else if (key == "RTRIM")         P.rightTrim           = val.toInt();
         else if (key == "APPSPD")        P.approachSpeed       = val.toInt();

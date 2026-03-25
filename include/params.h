@@ -6,18 +6,20 @@
 #include <Arduino.h>
 
 struct Params {
-    // ── PID / line-follow ────────────────────────────────────────────────
-    int   baseSpeed;          // normal forward speed
-    int   fastSpeed;          // fast outer wheel in wide turns
-    int   slowSpeed;          // slow inner wheel in wide turns
-    int   turnSpeed;          // recovery pivot speed
-    int   sharpSpeed;         // sharp 90° turn speed
-    int   recoverSpeed;       // post-obstacle recovery speed
-    int   searchSpeed;        // pivot search speed when line lost
-    int   reverseSpeed;       // reverse speed in recovery
-    int   reverseBiasDelta;   // asymmetry added when reversing with bias
-    int   forwardRecoverSpeed;// creep-forward speed in recovery fwd stage
-    int   minSpeed;           // minimum PID output (prevents stall)
+    // ── PID / line-follow ────────────────────────────────────────────────────────────────
+    int   baseSpeed;           // normal forward speed
+    int   fastSpeed;           // fast outer wheel in wide turns
+    int   slowSpeed;           // slow inner wheel in wide turns
+    int   turnSpeed;           // recovery pivot speed
+    int   sharpSpeed;          // sharp 90° turn speed
+    int   recoverSpeed;        // post-obstacle recovery speed
+    int   searchSpeed;         // pivot search speed when line lost
+    int   reverseSpeed;        // reverse speed in recovery
+    int   reverseBiasDelta;    // asymmetry added when reversing with bias
+    int   forwardRecoverSpeed; // creep-forward speed in recovery fwd stage
+    //                           FIX C5: raised 60→90; brief line-loss no longer
+    //                           drops speed to 37% of baseSpeed
+    int   minSpeed;            // minimum PID dynBase (prevents stall)
 
     unsigned long timeoutLeft;         // max ms for left recovery pivot
     unsigned long timeoutRight;        // max ms for right recovery pivot / reverse
@@ -25,13 +27,23 @@ struct Params {
 
     float kp;          // PID proportional gain
     float kd;          // PID derivative gain
+    //                   FIX C4: reduced 10→5; derivative spikes no longer
+    //                   slam inner wheel to near-stall on error rate changes
     float posFilter;   // low-pass α for position  (0=raw, 1=frozen)
+    //                   FIX C2: reduced 0.65→0.50; filteredPos settles to 0
+    //                   faster so dynBase penalty shrinks on straights
     float widthKp;     // line-width correction gain
+    float speedDrop;   // BUG-6: PWM units subtracted per unit of |error|
+    //                   formula: dynBase = baseSpeed - |error| * speedDrop
+    //                   FIX: exposed as tunable param (default 4.0)
+    //                   previously hardcoded 8.0 (over-penalised at baseSpeed=160)
 
-    int leftTrim;      // +n  ≡ left motor gets +n PWM to compensate weaker side
+    int leftTrim;      // +n ≡ left motor gets +n PWM to compensate weaker side
+    //                   FIX C1: set to 0; value of 8 created asymmetry that
+    //                   forced PID to over-correct, dragging average speed down
     int rightTrim;
 
-    // ── Obstacle / Color / Servo ─────────────────────────────────────────
+    // ── Obstacle / Color / Servo ────────────────────────────────────────────────
     int   approachSpeed;       // slow speed while closing on obstacle
     int   avoidSpeed;          // speed used during avoidance maneuver
     int   pickApproachSpeed;   // speed during final green-pick approach
