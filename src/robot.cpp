@@ -59,7 +59,7 @@ void robot_followLine() {
     lastError = error;
 
     // Slow down in curves
-    int dynBase = P.baseSpeed - (int)(fabsf(error) * 8.0f);
+    int dynBase = P.baseSpeed - (int)(fabsf(error) * 4.0f);
     dynBase = constrain(dynBase, P.minSpeed, P.baseSpeed);
 
     int leftSpd  = constrain(dynBase + (int)correction, 0, 255);
