@@ -57,8 +57,8 @@ Params P = {
     120,    // redThresh
     100,    // greenThresh
 
-    110,    // servoHomeAngle  (gate CLOSED = 110 deg)
-    1       // servoPickAngle  (gate OPEN   =   1 deg)
+    50,    // servoHomeAngle  (gate CLOSED = 110 deg)
+    120       // servoPickAngle  (gate OPEN   =   1 deg)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
