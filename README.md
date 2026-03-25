@@ -4,7 +4,7 @@
 > 5-sensor PID line following • ultrasonic obstacle detection • TCS3200 colour-based pick-and-place
 
 [![PlatformIO](https://img.shields.io/badge/built%20with-PlatformIO-orange)](https://platformio.org/)
-[![ESP32](https://img.shields.io/badge/board-ESP32%20DevKitC%20v4%2030--pin-blue)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/)
+[![ESP32](https://img.shields.io/badge/board-ESP32%20Dev%20Module%2038--pin-blue)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/)
 [![Framework](https://img.shields.io/badge/framework-Arduino-teal)](https://docs.arduino.cc/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -12,7 +12,7 @@
 
 ## Overview
 
-SmartLineFollowerRobot is a modular, fully-tunable autonomous robot firmware written in C++ for the **ESP32 DevKitC v4 (30-pin, WROOM-32)** using the **PlatformIO + Arduino** framework.
+SmartLineFollowerRobot is a modular, fully-tunable autonomous robot firmware written in C++ for the **ESP32 Dev Module (38-pin, WROOM-32)** using the **PlatformIO + Arduino** framework.
 
 The robot follows a yellow/white line on a dark floor, detects obstacles ahead with an HC-SR04 ultrasonic sensor, reads the colour of a cube placed on the track with a TCS3200 sensor, and then either **avoids a red cube** (U-shape bypass manoeuvre) or **picks up and carries a green cube** to the end zone before releasing it with a single-servo drop-gate gripper.
 
@@ -42,7 +42,7 @@ The robot follows a yellow/white line on a dark floor, detects obstacles ahead w
 
 | Component | Model | Qty |
 |---|---|---|
-| Microcontroller | ESP32 DevKitC v4 **30-pin** (WROOM-32) | 1 |
+| Microcontroller | ESP32 Dev Module 38-pin (WROOM-32) | 1 |
 | Motor driver | L298N dual H-bridge | 1 |
 | Drive motors | DC geared motor (TT or N20) | 2 |
 | Front wheel | Castor / omni ball | 1 |
@@ -50,70 +50,49 @@ The robot follows a yellow/white line on a dark floor, detects obstacles ahead w
 | Ultrasonic sensor | HC-SR04 | 1 |
 | Colour sensor | TCS3200 | 1 |
 | Servo (gripper gate) | SG90 / MG90S | 1 |
-| Voltage divider | 1 kΩ + 2 kΩ resistors | 1 set |
+| Voltage divider | 1 kΩ + 2 kΩ resistors (ECHO line) | 1 set |
 | Power | 7.4 V LiPo or 6× AA | 1 |
 
 ---
 
-### 30-Pin Board — GPIO Availability
-
-The 30-pin DevKitC exposes the following GPIO numbers on its two edge rows:
-
-```
-Left row  (top → bottom):
-  3V3  GND  GPIO15  GPIO2   GPIO0   GPIO4
-  GPIO16   GPIO17  GPIO5   GPIO18  GPIO19
-  GPIO21   RX0(3)  TX0(1)  GND     5V
-
-Right row (top → bottom):
-  3V3  GND  GPIO13  GPIO12  GPIO14  GPIO27
-  GPIO26   GPIO25  GPIO33  GPIO32  GPIO35
-  GPIO34   GPIO39  GPIO36  GND     VIN
-```
-
-> ⚠️ **GPIO 22 and GPIO 23 are NOT broken out on the 30-pin header.**  
-> They exist on the chip but have no accessible physical pin on this PCB.
-> The firmware remaps these to GPIO 16 and GPIO 17 (see pin table below).
-
----
-
-### Pin Mapping
+### Pin Mapping (Final Tested)
 
 ```
 ESP32 GPIO   Signal           Notes
 -----------  ---------------  -------------------------------------------------
-GPIO 34      IR S1 (left)     Input-only GPIO — no OUTPUT allowed; right row
-GPIO 35      IR S2            Input-only; right row
-GPIO 32      IR S3            Input-only; right row
-GPIO 33      IR S4            Input-only; right row
-GPIO 25      IR S5 (right)    Input-only; right row
+GPIO 32      IR S1 (left)     Input-only GPIO — analogRead() only
+GPIO 33      IR S2            Input-only GPIO
+GPIO 34      IR S3            Input-only GPIO
+GPIO 35      IR S4            Input-only GPIO
+GPIO 27      IR S5 (right)    Bidirectional GPIO, used as input
 
-GPIO 14      ENA (PWM)        LEDC channel 0, right motor; right row
-GPIO 27      IN1              L298N ch-A direction; right row
-GPIO 26      IN2              L298N ch-A direction; right row
+GPIO  5      ENA (PWM)        LEDC channel 0, right motor (L298N ch-A)
+GPIO 18      IN1              L298N ch-A direction
+GPIO 19      IN2              L298N ch-A direction
 
-GPIO 12      ENB (PWM)        LEDC channel 1, left motor; right row
-GPIO 13      IN3              L298N ch-B direction; right row
-GPIO 17      IN4              L298N ch-B direction; left row
-                              (⚠ was GPIO 23 — not on 30-pin header, REMAPPED)
+GPIO 23      ENB (PWM)        LEDC channel 1, left motor (L298N ch-B)
+GPIO 21      IN3              L298N ch-B direction
+GPIO 22      IN4              L298N ch-B direction
 
-GPIO 16      Servo signal     ESP32Servo, LEDC timers 2 & 3; left row
-                              (⚠ was GPIO 22 — not on 30-pin header, REMAPPED)
+GPIO 13      Servo signal     Single-servo drop-gate gripper (ESP32Servo)
 
-GPIO  5      TRIG             HC-SR04 trigger; left row
-GPIO 18      ECHO             HC-SR04 echo — USE VOLTAGE DIVIDER (5V → 3.3V)
+GPIO 17      TRIG             HC-SR04 trigger pulse (10 µs HIGH)
+GPIO 16      ECHO             HC-SR04 echo return
+                              ⚠ USE 1kΩ + 2kΩ VOLTAGE DIVIDER (5V → 3.3V)
 
-GPIO  4      TCS S0           Frequency scale select; left row
-GPIO  2      TCS S1           Frequency scale select; left row
-                              (⚠ Strapping pin — keep LOW during flash)
-GPIO 15      TCS S2           Filter select; left row
-GPIO 21      TCS S3           Filter select; left row
-GPIO 19      TCS OUT          Square wave output (3.3 V safe); left row
+GPIO 14      TCS S0           Frequency scale select (S0=HIGH, S1=LOW → 20%)
+GPIO 15      TCS S1           Frequency scale select
+GPIO 26      TCS S2           Colour filter select
+GPIO 25      TCS S3           Colour filter select
+GPIO  2      TCS OUT          Square wave output (3.3V safe as INPUT)
+                              ⚠ Boot-strapping pin — do NOT add pull-up
 ```
 
-> **Warning:** HC-SR04 ECHO outputs **5 V**. Connect a **1 kΩ + 2 kΩ** resistor voltage divider before GPIO 18 to avoid damaging the ESP32.
+> **Warning:** HC-SR04 ECHO outputs **5 V**. Connect a **1 kΩ + 2 kΩ** resistor voltage divider before GPIO 16 to protect the ESP32 input.
 
-> **Warning:** GPIO 2 is a boot-strapping pin. Do not connect a pull-up resistor to it. The TCS3200 drives it LOW (correct for 20% frequency scale) which is safe.
+> **Warning:** GPIO 2 (TCS OUT) is an ESP32 boot-strapping pin. Using it as an INPUT is safe; do NOT connect a pull-up resistor. If GPIO 2 is HIGH at boot, the chip enters download mode.
+
+> **Note:** GPIO 32, 33, 34, 35 are input-only. They have no internal pull-up or pull-down resistors and cannot be configured as OUTPUT.
 
 ---
 
@@ -121,7 +100,7 @@ GPIO 19      TCS OUT          Square wave output (3.3 V safe); left row
 
 ```
 SmartLineFollowerRobot/
-├── platformio.ini          # PlatformIO build config, board: esp32doit-devkit-v1
+├── platformio.ini          # PlatformIO build config — board: esp32dev (38-pin)
 ├── include/
 │   ├── config.h            # extern pin declarations + LEDC / EEPROM #defines
 │   ├── params.h            # Tunable Params struct + extern P declaration
@@ -218,6 +197,8 @@ platformio run --environment esp32dev --target upload
 Or use the PlatformIO sidebar in VS Code: **Project Tasks → esp32dev → Upload**
 
 ### 4. Calibrate Sensors
+
+> ⚠️ **EEPROM_MAGIC was bumped to `0xAE`** in this update. Any previously saved EEPROM data will be ignored on first boot. You must run `CALIBRATE` and `SAVE` again after flashing.
 
 Open Serial Monitor at **115200 baud**, then type:
 
@@ -373,8 +354,8 @@ The ESP32 does not have Arduino-style `analogWrite()`. The LEDC peripheral provi
 ### Why is ECHO on a voltage divider?
 The HC-SR04 ECHO pin outputs 5 V. ESP32 GPIO inputs are only 3.3 V tolerant. A 1 kΩ + 2 kΩ resistor divider reduces 5 V to 3.3 V safely.
 
-### Why GPIO 16 & 17 for servo and IN4?
-GPIO 22 and 23 exist on the ESP32-WROOM-32 chip but are **not physically broken out** on the 30-pin DevKitC PCB. GPIO 16 and 17 are available on the left row of the 30-pin board and are free from internal flash connections on the WROOM-32 module.
+### GPIO 2 as TCS OUT
+GPIO 2 is an ESP32 boot-strapping pin. When used as an **input** (reading the TCS3200 square wave output) it is perfectly safe. It only causes issues if driven HIGH externally during reset, which the TCS3200 output does not do at boot time. Do **not** add a pull-up resistor to this pin.
 
 ---
 
@@ -386,7 +367,7 @@ GPIO 22 and 23 exist on the ESP32-WROOM-32 chip but are **not physically broken 
 | BUG-02 | `main.cpp`, `robot.cpp` | Remove duplicate `servo_close()` from `ST_GREEN_PICK`; single authoritative call inside `robot_executeGreenPick()` |
 | BUG-03 | `main.cpp` | Add 500 ms debounce timer to end-zone drop; prevents false release on tape gaps or sensor bounce |
 | BUG-10 | `main.cpp` | Move `params_loadEEPROM()` before `servo_init()` so saved servo angles are applied on first write |
-| Board | `platformio.ini`, `config.cpp` | Switch board to `esp32doit-devkit-v1` (30-pin); remap GPIO23→17 (IN4) and GPIO22→16 (servo) |
+| PIN-01 | `config.cpp`, `platformio.ini` | Apply final tested 38-pin pin map; revert board to `esp32dev`; bump `EEPROM_MAGIC` to `0xAE` |
 
 ---
 
