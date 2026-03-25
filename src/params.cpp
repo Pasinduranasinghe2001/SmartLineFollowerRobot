@@ -1,21 +1,28 @@
 // =========================================================================
-//  params.cpp  –  Default values, EEPROM, serial command handler
+//  params.cpp  -  Default values, EEPROM, serial command handler
 //
 //  MD0370 sensor change notes:
-//    ─ calBlack / calWhite / calThresh arrays REMOVED (digital sensor,
-//      no ADC calibration needed – adjust module pot on the bench)
-//    ─ EEPROM_MAGIC bumped 0xAC → 0xAD  to invalidate old analog-cal data
-//    ─ CALIBRATE serial command removed
-//    ─ EEPROM now stores ONLY the Params struct (starts at EEPROM_ADDR_PARAMS)
+//    - calBlack / calWhite / calThresh arrays REMOVED (digital sensor)
+//    - EEPROM_MAGIC bumped to reject old data
+//    - EEPROM now stores ONLY the Params struct
+//
+//  Physic 3 defaults:
+//    curveDetectThresh  = 0.55  (triggers on moderate curves)
+//    curveSlowSpeed     = 110   (start here, raise if robot cuts corners)
+//    curveConfirmLoops  = 4     (4 consecutive loops to enter curve mode)
+//
+//  Physic 4 defaults:
+//    avoidPreferRight   = 0     (always left - safe default, set to 1
+//                                to enable auto side-selection)
 // =========================================================================
 #include <Arduino.h>
 #include <EEPROM.h>
 #include "params.h"
 #include "config.h"
 
-// ── Default parameter values ───────────────────────────────────────────────
+// ── Default parameter values ────────────────────────────────────────────────
 Params P = {
-    // ── PID / line-follow ───────────────────────────────────────────────
+    // PID / line-follow
     180,    // baseSpeed
     215,    // fastSpeed
     120,    // slowSpeed
@@ -23,10 +30,10 @@ Params P = {
     170,    // sharpSpeed
     150,    // recoverSpeed
     150,    // searchSpeed
-    180,     // reverseSpeed
+    180,    // reverseSpeed
     20,     // reverseBiasDelta
     140,    // forwardRecoverSpeed
-    120,     // minSpeed
+    120,    // minSpeed
 
     1800UL, // timeoutLeft  (ms)
     3000UL, // timeoutRight (ms)
@@ -41,7 +48,15 @@ Params P = {
     0,      // leftTrim
     0,      // rightTrim
 
-    // ── Obstacle / color / servo ───────────────────────────────────────────
+    // Physic 3: curvature-adaptive speed
+    0.55f,  // curveDetectThresh   (|filteredPos| threshold)
+    110,    // curveSlowSpeed      (PWM cap in curve mode)
+    4,      // curveConfirmLoops   (loops to confirm curve entry)
+
+    // Physic 4: obstacle side memory
+    0,      // avoidPreferRight    (0=always left, 1=auto)
+
+    // Obstacle / color / servo
     70,     // approachSpeed
     100,    // avoidSpeed
     50,     // pickApproachSpeed
@@ -57,32 +72,24 @@ Params P = {
     120,    // redThresh
     100,    // greenThresh
 
-    1,    // servoHomeAngle  (gate CLOSED)
-    110    // servoPickAngle  (gate OPEN)  ← updated for MG996R
+    110,    // servoHomeAngle  (gate CLOSED = 110 deg)
+    1       // servoPickAngle  (gate OPEN   =   1 deg)
 };
 
-// ───────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 void params_init() { /* defaults already set above */ }
 
-// ── EEPROM ─────────────────────────────────────────────────────────────────────
-//
-//  Layout (magic bumped to 0xAD to reject old 0xAC analog-cal data):
-//    byte 0         : EEPROM_MAGIC  (0xAD)
-//    bytes 100+     : Params struct (EEPROM_ADDR_PARAMS)
-//
-//  No calibration arrays stored – MD0370 modules are self-calibrating
-//  via the onboard potentiometer.
-
+// ── EEPROM ───────────────────────────────────────────────────────────────────
 void params_saveEEPROM() {
     EEPROM.write(EEPROM_ADDR_MAGIC, EEPROM_MAGIC);
     EEPROM.put(EEPROM_ADDR_PARAMS, P);
-    EEPROM.commit();   // required on ESP32
-    Serial.println(F("[EEPROM] Saved (Params only, no cal data)."));
+    EEPROM.commit();
+    Serial.println(F("[EEPROM] Saved."));
 }
 
 bool params_loadEEPROM() {
     if (EEPROM.read(EEPROM_ADDR_MAGIC) != EEPROM_MAGIC) {
-        Serial.println(F("[EEPROM] Magic mismatch – using firmware defaults."));
+        Serial.println(F("[EEPROM] Magic mismatch - using firmware defaults."));
         return false;
     }
     EEPROM.get(EEPROM_ADDR_PARAMS, P);
@@ -92,7 +99,7 @@ bool params_loadEEPROM() {
 
 // ── Status print ──────────────────────────────────────────────────────────────
 void params_printStatus() {
-    Serial.println(F("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 PID / LINE-FOLLOW \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    Serial.println(F("-------- PID / LINE-FOLLOW --------"));
     Serial.printf("BASE=%d FAST=%d SLOW=%d\n",   P.baseSpeed, P.fastSpeed, P.slowSpeed);
     Serial.printf("TURN=%d SHARP=%d RECOVER=%d SEARCH=%d\n",
                   P.turnSpeed, P.sharpSpeed, P.recoverSpeed, P.searchSpeed);
@@ -104,16 +111,25 @@ void params_printStatus() {
                   P.kp, P.kd, P.posFilter, P.widthKp, P.speedDrop);
     Serial.printf("LTRIM=%d RTRIM=%d\n", P.leftTrim, P.rightTrim);
 
-    Serial.println(F("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 OBSTACLE / COLOR / SERVO \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    Serial.println(F("-------- PHYSIC 3: CURVE-ADAPTIVE SPEED --------"));
+    Serial.printf("CURVTHR=%.2f CURVSPD=%d CURVLOOPS=%d\n",
+                  P.curveDetectThresh, P.curveSlowSpeed, P.curveConfirmLoops);
+
+    Serial.println(F("-------- PHYSIC 4: OBSTACLE SIDE MEMORY --------"));
+    Serial.printf("AVDSIDE=%d (%s)\n",
+                  P.avoidPreferRight,
+                  P.avoidPreferRight ? "auto side-select" : "always LEFT");
+
+    Serial.println(F("-------- OBSTACLE / COLOR / SERVO --------"));
     Serial.printf("APPSPD=%d AVDSPD=%d PCKSPD=%d\n",
                   P.approachSpeed, P.avoidSpeed, P.pickApproachSpeed);
     Serial.printf("REVTIME=%lu FWDTIME=%lu T90TIME=%lu\n",
                   P.reverseAvoidTime, P.forwardAvoidTime, P.turn90AvoidTime);
     Serial.printf("SLWDIST=%.1f COLDIST=%.1f PCKDIST=%.2f\n",
                   P.obstacleSlowDist, P.colorCheckDist, P.greenPickDist);
-    Serial.printf("REDTHR=%d GRNTHR=%d\n",  P.redThresh,       P.greenThresh);
-    Serial.printf("SVHOME=%d SVPICK=%d\n",  P.servoHomeAngle,  P.servoPickAngle);
-    Serial.println(F("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 IR SENSORS (MD0370) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"));
+    Serial.printf("REDTHR=%d GRNTHR=%d\n",  P.redThresh,      P.greenThresh);
+    Serial.printf("SVHOME=%d SVPICK=%d\n",  P.servoHomeAngle, P.servoPickAngle);
+    Serial.println(F("-------- IR SENSORS (MD0370) --------"));
     Serial.printf("Count=7  Digital  activeLevel=%s\n",
 #if LINE_ACTIVE_LOW
                   "LOW"
@@ -121,7 +137,6 @@ void params_printStatus() {
                   "HIGH"
 #endif
     );
-    Serial.println(F("Sensitivity: adjust onboard potentiometer per module."));
 }
 
 // ── Serial command handler ─────────────────────────────────────────────────
@@ -132,7 +147,6 @@ void params_handleSerial() {
     cmd.trim();
     cmd.toUpperCase();
 
-    // CALIBRATE removed – MD0370 uses onboard potentiometer, no firmware cal needed
     if (cmd == "STATUS") { params_printStatus(); return; }
     if (cmd == "SAVE")   { params_saveEEPROM();  return; }
     if (cmd == "LOAD") {
@@ -149,6 +163,7 @@ void params_handleSerial() {
         val.trim();
 
         bool found = true;
+        // PID / line-follow
         if      (key == "BASE")         P.baseSpeed           = val.toInt();
         else if (key == "FAST")         P.fastSpeed           = val.toInt();
         else if (key == "SLOW")         P.slowSpeed           = val.toInt();
@@ -170,6 +185,13 @@ void params_handleSerial() {
         else if (key == "SPEEDDROP")    P.speedDrop           = val.toFloat();
         else if (key == "LTRIM")        P.leftTrim            = val.toInt();
         else if (key == "RTRIM")        P.rightTrim           = val.toInt();
+        // Physic 3: curvature-adaptive speed
+        else if (key == "CURVTHR")      P.curveDetectThresh   = val.toFloat();
+        else if (key == "CURVSPD")      P.curveSlowSpeed      = val.toInt();
+        else if (key == "CURVLOOPS")    P.curveConfirmLoops   = val.toInt();
+        // Physic 4: obstacle side memory
+        else if (key == "AVDSIDE")      P.avoidPreferRight    = val.toInt();
+        // Obstacle / avoidance / servo
         else if (key == "APPSPD")       P.approachSpeed       = val.toInt();
         else if (key == "AVDSPD")       P.avoidSpeed          = val.toInt();
         else if (key == "PCKSPD")       P.pickApproachSpeed   = val.toInt();
