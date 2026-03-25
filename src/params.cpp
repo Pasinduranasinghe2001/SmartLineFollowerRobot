@@ -5,6 +5,7 @@
 #include <EEPROM.h>
 #include "params.h"
 #include "config.h"
+#include "logger.h"
 
 Params P = {
     // PID / line-follow
@@ -94,16 +95,11 @@ void params_printStatus() {
     Serial.printf("KP=%.2f KD=%.2f FILTER=%.2f WIDTHKP=%.2f SPEEDDROP=%.2f\n",
                   P.kp, P.kd, P.posFilter, P.widthKp, P.speedDrop);
     Serial.printf("LTRIM=%d RTRIM=%d\n", P.leftTrim, P.rightTrim);
-
-    Serial.println(F("-------- PHYSIC 3: CURVE-ADAPTIVE SPEED --------"));
+    Serial.println(F("-------- PHYSIC 3 --------"));
     Serial.printf("CURVTHR=%.2f CURVSPD=%d CURVLOOPS=%d\n",
                   P.curveDetectThresh, P.curveSlowSpeed, P.curveConfirmLoops);
-
-    Serial.println(F("-------- PHYSIC 4: OBSTACLE SIDE MEMORY --------"));
-    Serial.printf("AVDSIDE=%d (%s)\n",
-                  P.avoidPreferRight,
-                  P.avoidPreferRight ? "auto side-select" : "always LEFT");
-
+    Serial.println(F("-------- PHYSIC 4 --------"));
+    Serial.printf("AVDSIDE=%d\n", P.avoidPreferRight);
     Serial.println(F("-------- OBSTACLE / COLOR / SERVO --------"));
     Serial.printf("APPSPD=%d AVDSPD=%d PCKSPD=%d\n",
                   P.approachSpeed, P.avoidSpeed, P.pickApproachSpeed);
@@ -111,32 +107,25 @@ void params_printStatus() {
                   P.reverseAvoidTime, P.forwardAvoidTime, P.turn90AvoidTime);
     Serial.printf("SLWDIST=%.1f COLDIST=%.1f PCKDIST=%.2f\n",
                   P.obstacleSlowDist, P.colorCheckDist, P.greenPickDist);
-    Serial.printf("REDTHR=%d GRNTHR=%d\n",  P.redThresh,      P.greenThresh);
+    Serial.printf("REDTHR=%d GRNTHR=%d\n",  P.redThresh, P.greenThresh);
     Serial.printf("SVHOME=%d SVPICK=%d\n",  P.servoHomeAngle, P.servoPickAngle);
-
     Serial.println(F("-------- END-ZONE DETECTOR --------"));
-    Serial.printf("ENDZONEMS=%lu  (pattern: 1111111->0000000->1111111, each phase >=%lu ms)\n",
-                  P.endZoneHoldMs, P.endZoneHoldMs);
-
-    Serial.println(F("-------- IR SENSORS (MD0370) --------"));
-    Serial.printf("Count=7  Digital  activeLevel=%s\n",
-#if LINE_ACTIVE_LOW
-                  "LOW"
-#else
-                  "HIGH"
-#endif
-    );
+    Serial.printf("ENDZONEMS=%lu\n", P.endZoneHoldMs);
+    Serial.println(F("-------- FILE LOGGER --------"));
+    logger_printInfo();
 }
 
 void params_handleSerial() {
     if (!Serial.available()) return;
-
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     cmd.toUpperCase();
 
-    if (cmd == "STATUS") { params_printStatus(); return; }
-    if (cmd == "SAVE")   { params_saveEEPROM();  return; }
+    if (cmd == "STATUS")   { params_printStatus(); return; }
+    if (cmd == "SAVE")     { params_saveEEPROM();  return; }
+    if (cmd == "DUMPLOG")  { logger_dump();        return; }
+    if (cmd == "CLEARLOG") { logger_clear();       return; }
+    if (cmd == "LOGINFO")  { logger_printInfo();   return; }
     if (cmd == "LOAD") {
         if (params_loadEEPROM()) params_printStatus();
         else Serial.println(F("[EEPROM] No saved data."));
@@ -149,7 +138,6 @@ void params_handleSerial() {
         String key = cmd.substring(4, sp);
         String val = cmd.substring(sp + 1);
         val.trim();
-
         bool found = true;
         if      (key == "BASE")         P.baseSpeed           = val.toInt();
         else if (key == "FAST")         P.fastSpeed           = val.toInt();
@@ -191,11 +179,10 @@ void params_handleSerial() {
         else if (key == "SVPICK")       P.servoPickAngle      = val.toInt();
         else if (key == "ENDZONEMS")    P.endZoneHoldMs       = (unsigned long)val.toInt();
         else found = false;
-
         if (found) Serial.printf("[SET] %s = %s\n", key.c_str(), val.c_str());
         else       Serial.printf("[SET] Unknown key: %s\n", key.c_str());
         return;
     }
 
-    Serial.println(F("Commands: STATUS | SAVE | LOAD | SET KEY VALUE"));
+    Serial.println(F("Commands: STATUS | SAVE | LOAD | SET KEY VALUE | DUMPLOG | CLEARLOG | LOGINFO"));
 }
