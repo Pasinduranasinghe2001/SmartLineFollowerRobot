@@ -10,9 +10,9 @@
 // ── Default parameter values ──────────────────────────────────────────────
 Params P = {
     // PID / line-follow
-    110,    // baseSpeed
-    130,    // fastSpeed
-    80,     // slowSpeed
+    160,    // baseSpeed
+    210,    // fastSpeed
+    120,     // slowSpeed
     130,    // turnSpeed
     150,    // sharpSpeed
     110,    // recoverSpeed

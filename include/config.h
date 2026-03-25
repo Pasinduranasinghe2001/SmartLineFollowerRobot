@@ -63,7 +63,7 @@ extern const int PIN_CS_S3;          // 25
 extern const int PIN_CS_OUT;         //  2  (boot-strapping pin, INPUT is safe)
 
 // ─── LEDC (ESP32 hardware PWM) ────────────────────────────────────────────
-#define LEDC_FREQ           5000     // 5 kHz carrier
+#define LEDC_FREQ           20000     // 5 kHz carrier
 #define LEDC_RESOLUTION        8     // 8-bit → duty 0–255
 #define LEDC_CH_ENA            0     // channel 0 → right motor ENA
 #define LEDC_CH_ENB            1     // channel 1 → left  motor ENB
