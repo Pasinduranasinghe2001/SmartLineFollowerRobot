@@ -53,28 +53,18 @@
 // =========================================================================
 //  MQTT / Wi-Fi CONFIGURATION
 //  -------------------------------------------------------------------------
-//  DBG_DISABLE_MQTT = 0  ->  Wi-Fi + MQTT enabled (default)
+//  DBG_DISABLE_MQTT = 0  ->  Wi-Fi + MQTT enabled
 //  DBG_DISABLE_MQTT = 1  ->  Wi-Fi completely skipped, robot runs offline
-//                            (use for competition / no router available)
+//                            mqtt_init() and mqtt_loop() become empty stubs.
+//                            Zero overhead - safe for competition.
 //
-//  MQTT_BROKER  - IP address of your MQTT broker on the local network
-//                 Options:
-//                   Mosquitto on laptop : your laptop IP (e.g. 192.168.1.100)
-//                   Mosquitto on Pi     : Pi IP address
-//                   Cloud broker (test) : "broker.hivemq.com" port 1883
-//
-//  Topics:
-//    robot/params/set    <- publish JSON  {"key":"KP","value":"18.5"}
-//    robot/params/save   <- publish any payload to save EEPROM
-//    robot/params/load   <- publish any payload to load EEPROM
-//    robot/params/status <- publish any payload to print current params
-//    robot/params/ack    -> ESP32 publishes ack after each SET
+//  To re-enable: set DBG_DISABLE_MQTT back to 0 and fill in credentials.
 // =========================================================================
 
-#define DBG_DISABLE_MQTT       0          // 1 = skip WiFi entirely
+#define DBG_DISABLE_MQTT       1          // <<< MQTT DISABLED - set to 0 to re-enable
 
-#define MQTT_WIFI_SSID         "Dialog 4G 720"
-#define MQTT_WIFI_PASS         "82601557"
+#define MQTT_WIFI_SSID         "YOUR_SSID"
+#define MQTT_WIFI_PASS         "YOUR_PASSWORD"
 #define MQTT_BROKER            "192.168.1.100"  // broker IP on your LAN
 #define MQTT_PORT              1883
 #define MQTT_CLIENT_ID         "ESP32Robot"
