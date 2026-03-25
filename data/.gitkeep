@@ -1,0 +1,4 @@
+# This file exists only to keep the data/ directory tracked by git.
+# PlatformIO needs data/ to exist when board_build.filesystem = littlefs.
+# The LittleFS partition is formatted automatically on first boot.
+# Do not put any files here - the robot creates /pidlog.csv at runtime.
