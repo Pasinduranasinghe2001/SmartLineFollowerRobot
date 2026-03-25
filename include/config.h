@@ -47,7 +47,7 @@
 #define DBG_DISABLE_RECOVERY   0   // 1 = replace recovery with motors_stop()
 #define DBG_DISABLE_SPEEDDROP  0   // 1 = dynBase = baseSpeed always (flat speed)
 
-#define DBG_VERBOSE            0   // 1 = print sensors + PID every N ms
+#define DBG_VERBOSE            1   // <<< PID DEBUG ENABLED - set to 0 to silence
 #define DBG_VERBOSE_INTERVAL   200 // ms between verbose prints
 
 // =========================================================================
@@ -61,7 +61,7 @@
 //  To re-enable: set DBG_DISABLE_MQTT back to 0 and fill in credentials.
 // =========================================================================
 
-#define DBG_DISABLE_MQTT       1          // <<< MQTT DISABLED - set to 0 to re-enable
+#define DBG_DISABLE_MQTT       1          // MQTT DISABLED - set to 0 to re-enable
 
 #define MQTT_WIFI_SSID         "YOUR_SSID"
 #define MQTT_WIFI_PASS         "YOUR_PASSWORD"
