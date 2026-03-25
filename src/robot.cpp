@@ -17,6 +17,7 @@ static float pidPos      = 0.0f;
 static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
 static float lineWidth   = 0.0f;
+static float speedDrop    = 4.0f;   // multiplier for PID speed drop in curves (tune via SET SPEEDDROP <value>)
 
 // ── Lost-line recovery state ──────────────────────────────────────────────────────
 enum RecoveryMode {
