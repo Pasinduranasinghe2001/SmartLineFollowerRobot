@@ -8,34 +8,34 @@
 
 Params P = {
     // PID / line-follow
-    180,    // baseSpeed
-    200,    // fastSpeed
-    140,    // slowSpeed
+    140,    // baseSpeed
+    180,    // fastSpeed
+    120,    // slowSpeed
     150,    // turnSpeed
-    170,    // sharpSpeed
+    150,    // sharpSpeed
     150,    // recoverSpeed
     150,    // searchSpeed
     180,    // reverseSpeed
-    20,     // reverseBiasDelta
+    25,     // reverseBiasDelta
     140,    // forwardRecoverSpeed
     150,    // minSpeed
 
-    1800UL, // timeoutLeft  (ms)
-    2000UL, // timeoutRight (ms)
+    2000UL, // timeoutLeft  (ms)
+    1600UL, // timeoutRight (ms)
     160UL,  // forwardRecoverTime (ms)
 
-    20.0f,  // kp
-    5.5f,   // kd
+    5.0f,  // kp
+    0.0f,   // kd
     0.50f,  // posFilter
     6.0f,   // widthKp
-    4.0f,   // speedDrop
+    2.0f,   // speedDrop
 
     0,      // leftTrim
     0,      // rightTrim
 
     // Physic 3: curvature-adaptive speed
     0.55f,  // curveDetectThresh
-    110,    // curveSlowSpeed
+    140,    // curveSlowSpeed
     4,      // curveConfirmLoops
 
     // Physic 4: obstacle side memory
