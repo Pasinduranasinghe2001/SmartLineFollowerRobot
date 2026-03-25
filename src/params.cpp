@@ -1,26 +1,11 @@
 // =========================================================================
 //  params.cpp  -  Default values, EEPROM, serial command handler
-//
-//  MD0370 sensor change notes:
-//    - calBlack / calWhite / calThresh arrays REMOVED (digital sensor)
-//    - EEPROM_MAGIC bumped to reject old data
-//    - EEPROM now stores ONLY the Params struct
-//
-//  Physic 3 defaults:
-//    curveDetectThresh  = 0.55  (triggers on moderate curves)
-//    curveSlowSpeed     = 110   (start here, raise if robot cuts corners)
-//    curveConfirmLoops  = 4     (4 consecutive loops to enter curve mode)
-//
-//  Physic 4 defaults:
-//    avoidPreferRight   = 0     (always left - safe default, set to 1
-//                                to enable auto side-selection)
 // =========================================================================
 #include <Arduino.h>
 #include <EEPROM.h>
 #include "params.h"
 #include "config.h"
 
-// ── Default parameter values ────────────────────────────────────────────────
 Params P = {
     // PID / line-follow
     180,    // baseSpeed
@@ -49,20 +34,20 @@ Params P = {
     0,      // rightTrim
 
     // Physic 3: curvature-adaptive speed
-    0.55f,  // curveDetectThresh   (|filteredPos| threshold)
-    110,    // curveSlowSpeed      (PWM cap in curve mode)
-    4,      // curveConfirmLoops   (loops to confirm curve entry)
+    0.55f,  // curveDetectThresh
+    110,    // curveSlowSpeed
+    4,      // curveConfirmLoops
 
     // Physic 4: obstacle side memory
-    0,      // avoidPreferRight    (0=always left, 1=auto)
+    0,      // avoidPreferRight (0=always left)
 
     // Obstacle / color / servo
     70,     // approachSpeed
     100,    // avoidSpeed
     50,     // pickApproachSpeed
 
-    700UL,  // reverseAvoidTime  (~7 cm)
-    1400UL, // forwardAvoidTime  (~15 cm)
+    700UL,  // reverseAvoidTime
+    1400UL, // forwardAvoidTime
     650UL,  // turn90AvoidTime
 
     17.0f,  // obstacleSlowDist (cm)
@@ -72,14 +57,15 @@ Params P = {
     120,    // redThresh
     100,    // greenThresh
 
-    110,    // servoHomeAngle  (gate CLOSED = 110 deg)
-    1       // servoPickAngle  (gate OPEN   =   1 deg)
+    110,    // servoHomeAngle (CLOSED = 110 deg)
+    1,      // servoPickAngle (OPEN   =   1 deg)
+
+    // End-zone 3-phase detector
+    60UL,   // endZoneHoldMs  (ms each phase must hold)
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-void params_init() { /* defaults already set above */ }
+void params_init() { }
 
-// ── EEPROM ───────────────────────────────────────────────────────────────────
 void params_saveEEPROM() {
     EEPROM.write(EEPROM_ADDR_MAGIC, EEPROM_MAGIC);
     EEPROM.put(EEPROM_ADDR_PARAMS, P);
@@ -97,7 +83,6 @@ bool params_loadEEPROM() {
     return true;
 }
 
-// ── Status print ──────────────────────────────────────────────────────────────
 void params_printStatus() {
     Serial.println(F("-------- PID / LINE-FOLLOW --------"));
     Serial.printf("BASE=%d FAST=%d SLOW=%d\n",   P.baseSpeed, P.fastSpeed, P.slowSpeed);
@@ -129,6 +114,11 @@ void params_printStatus() {
                   P.obstacleSlowDist, P.colorCheckDist, P.greenPickDist);
     Serial.printf("REDTHR=%d GRNTHR=%d\n",  P.redThresh,      P.greenThresh);
     Serial.printf("SVHOME=%d SVPICK=%d\n",  P.servoHomeAngle, P.servoPickAngle);
+
+    Serial.println(F("-------- END-ZONE DETECTOR --------"));
+    Serial.printf("ENDZONEMS=%lu  (pattern: 1111111->0000000->1111111, each phase >=%lu ms)\n",
+                  P.endZoneHoldMs, P.endZoneHoldMs);
+
     Serial.println(F("-------- IR SENSORS (MD0370) --------"));
     Serial.printf("Count=7  Digital  activeLevel=%s\n",
 #if LINE_ACTIVE_LOW
@@ -139,7 +129,6 @@ void params_printStatus() {
     );
 }
 
-// ── Serial command handler ─────────────────────────────────────────────────
 void params_handleSerial() {
     if (!Serial.available()) return;
 
@@ -151,7 +140,7 @@ void params_handleSerial() {
     if (cmd == "SAVE")   { params_saveEEPROM();  return; }
     if (cmd == "LOAD") {
         if (params_loadEEPROM()) params_printStatus();
-        else Serial.println(F("[EEPROM] No saved data. Using firmware defaults."));
+        else Serial.println(F("[EEPROM] No saved data."));
         return;
     }
 
@@ -163,7 +152,6 @@ void params_handleSerial() {
         val.trim();
 
         bool found = true;
-        // PID / line-follow
         if      (key == "BASE")         P.baseSpeed           = val.toInt();
         else if (key == "FAST")         P.fastSpeed           = val.toInt();
         else if (key == "SLOW")         P.slowSpeed           = val.toInt();
@@ -185,13 +173,10 @@ void params_handleSerial() {
         else if (key == "SPEEDDROP")    P.speedDrop           = val.toFloat();
         else if (key == "LTRIM")        P.leftTrim            = val.toInt();
         else if (key == "RTRIM")        P.rightTrim           = val.toInt();
-        // Physic 3: curvature-adaptive speed
         else if (key == "CURVTHR")      P.curveDetectThresh   = val.toFloat();
         else if (key == "CURVSPD")      P.curveSlowSpeed      = val.toInt();
         else if (key == "CURVLOOPS")    P.curveConfirmLoops   = val.toInt();
-        // Physic 4: obstacle side memory
         else if (key == "AVDSIDE")      P.avoidPreferRight    = val.toInt();
-        // Obstacle / avoidance / servo
         else if (key == "APPSPD")       P.approachSpeed       = val.toInt();
         else if (key == "AVDSPD")       P.avoidSpeed          = val.toInt();
         else if (key == "PCKSPD")       P.pickApproachSpeed   = val.toInt();
@@ -205,6 +190,7 @@ void params_handleSerial() {
         else if (key == "GRNTHR")       P.greenThresh         = val.toInt();
         else if (key == "SVHOME")       P.servoHomeAngle      = val.toInt();
         else if (key == "SVPICK")       P.servoPickAngle      = val.toInt();
+        else if (key == "ENDZONEMS")    P.endZoneHoldMs       = (unsigned long)val.toInt();
         else found = false;
 
         if (found) Serial.printf("[SET] %s = %s\n", key.c_str(), val.c_str());
