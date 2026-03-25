@@ -38,8 +38,8 @@
 #define SERVO_MAX_DEG 180
 
 Servo sv;
-int homeAngle = 90;    // gate CLOSED  - tune with TEST STEP
-int pickAngle = 150;   // gate OPEN    - tune with TEST STEP
+int homeAngle = 1;    // gate CLOSED  - tune with TEST STEP
+int pickAngle = 60;   // gate OPEN    - tune with TEST STEP
 int stepDelay = 15;    // ms per degree in sweep
 int curAngle  = 90;
 

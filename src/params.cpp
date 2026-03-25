@@ -16,17 +16,17 @@
 // ── Default parameter values ───────────────────────────────────────────────
 Params P = {
     // ── PID / line-follow ───────────────────────────────────────────────
-    160,    // baseSpeed
-    210,    // fastSpeed
-    120,    // slowSpeed
-    130,    // turnSpeed
-    150,    // sharpSpeed
-    110,    // recoverSpeed
-    100,    // searchSpeed
-    90,     // reverseSpeed
+    200,    // baseSpeed
+    250,    // fastSpeed
+    150,    // slowSpeed
+    150,    // turnSpeed
+    180,    // sharpSpeed
+    150,    // recoverSpeed
+    150,    // searchSpeed
+    180,     // reverseSpeed
     18,     // reverseBiasDelta
-    100,    // forwardRecoverSpeed
-    40,     // minSpeed
+    140,    // forwardRecoverSpeed
+    120,     // minSpeed
 
     1800UL, // timeoutLeft  (ms)
     4000UL, // timeoutRight (ms)
@@ -57,8 +57,8 @@ Params P = {
     120,    // redThresh
     100,    // greenThresh
 
-    109,    // servoHomeAngle  (gate CLOSED)
-    150     // servoPickAngle  (gate OPEN)  ← updated for MG996R
+    1,    // servoHomeAngle  (gate CLOSED)
+    110    // servoPickAngle  (gate OPEN)  ← updated for MG996R
 };
 
 // ───────────────────────────────────────────────────────────────────────
