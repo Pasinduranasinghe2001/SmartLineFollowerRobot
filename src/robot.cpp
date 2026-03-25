@@ -1,15 +1,22 @@
 // =========================================================================
 //  robot.cpp  -  PID line follow + lost-line recovery + obstacle + pick
 //
-//  MD0370 sensor changes:
-//    - sensors_computeWidth() removed (no analog strength data)
-//    - width compensation block removed from robot_followLine()
-//    - sensors_anyWhite() -> sensors_anyOn() (renamed in sensors.h)
+//  Physic 3 - Curvature-Adaptive Speed:
+//    robot_followLine() maintains a consecutive-loop counter.
+//    When |filteredPos| > P.curveDetectThresh for >= P.curveConfirmLoops
+//    loops the dynBase is capped at P.curveSlowSpeed instead of baseSpeed.
+//    A separate exit hysteresis (CURVE_EXIT_LOOPS) prevents chattering.
 //
-//  Green pick fixes:
-//    FIX-P1: servo_open() now called after reaching pick distance
-//    FIX-P2: ultrasonic median filter + spike rejection + hysteresis count
-//    FIX-P3: reverse after pick + PICK_COOLDOWN_MS to suppress re-detect
+//  Physic 4 - Obstacle Side Memory:
+//    robot_executeRedAvoid() reads P.avoidPreferRight.
+//    0 = always avoid left (original).
+//    1 = auto-select: SIDE_LEFT -> pivot RIGHT, SIDE_RIGHT -> pivot LEFT.
+//    All 6 avoidance steps are mirrored for the right-side case.
+//
+//  Previous fixes retained:
+//    FIX-P1: servo open/close sequence in executeGreenPick
+//    FIX-P2: ultrasonic median filter + hysteresis count
+//    FIX-P3: reverse after pick + 2.5s cooldown
 // =========================================================================
 #include <Arduino.h>
 #include "robot.h"
@@ -27,6 +34,12 @@ static float pidPos      = 0.0f;
 static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
 
+// Physic 3: curve mode state
+static int  _curveAboveCount = 0;  // consecutive loops above threshold
+static int  _curveBelowCount = 0;  // consecutive loops below threshold (exit)
+static bool _inCurveMode     = false;
+static const int CURVE_EXIT_LOOPS = 5;  // loops below thresh before exiting
+
 // Lost-line recovery state
 enum RecoveryMode {
     REC_IDLE, REC_REVERSE, REC_FORWARD_CHECK, REC_TURN_LEFT, REC_TURN_RIGHT
@@ -34,8 +47,8 @@ enum RecoveryMode {
 static RecoveryMode  recMode    = REC_IDLE;
 static unsigned long recStartMs = 0;
 
-// FIX-P3: cooldown after pick to suppress immediate re-detection
-static unsigned long _pickDoneMs   = 0;
+// FIX-P3: cooldown after pick
+static unsigned long _pickDoneMs = 0;
 static const unsigned long PICK_COOLDOWN_MS = 2500UL;
 
 bool robot_pickCooldownActive() {
@@ -49,7 +62,7 @@ void robot_resetRecovery() {
 }
 
 // =========================================================================
-//  PID LINE FOLLOWING
+//  PID LINE FOLLOWING  +  Physic 3: Curvature-Adaptive Speed
 // =========================================================================
 void robot_followLine() {
     pidPos      = sensors_computePosition();
@@ -60,8 +73,35 @@ void robot_followLine() {
     float correction = P.kp * error + P.kd * derivative;
     lastError = error;
 
-    int dynBase = P.baseSpeed - (int)(fabsf(error) * P.speedDrop);
-    dynBase = constrain(dynBase, P.minSpeed, P.baseSpeed);
+    // ── Physic 3: update curve mode ──────────────────────────────────────
+    //  Entry: |error| above threshold for N consecutive loops
+    //  Exit : |error| below threshold for CURVE_EXIT_LOOPS loops (hysteresis)
+    if (fabsf(error) > P.curveDetectThresh) {
+        _curveAboveCount++;
+        _curveBelowCount = 0;
+        if (_curveAboveCount >= P.curveConfirmLoops && !_inCurveMode) {
+            _inCurveMode = true;
+            Serial.printf("[CURVE] Entered curve mode (|err|=%.2f thresh=%.2f)\n",
+                          fabsf(error), P.curveDetectThresh);
+        }
+    } else {
+        _curveAboveCount = 0;
+        if (_inCurveMode) {
+            _curveBelowCount++;
+            if (_curveBelowCount >= CURVE_EXIT_LOOPS) {
+                _inCurveMode     = false;
+                _curveBelowCount = 0;
+                Serial.println(F("[CURVE] Exited curve mode"));
+            }
+        }
+    }
+
+    // Select effective base speed
+    int effectiveBase = _inCurveMode ? P.curveSlowSpeed : P.baseSpeed;
+
+    // Apply speedDrop on top of effective base
+    int dynBase = effectiveBase - (int)(fabsf(error) * P.speedDrop);
+    dynBase = constrain(dynBase, P.minSpeed, effectiveBase);
 
     int leftSpd  = constrain(dynBase + (int)correction, P.minSpeed, 255);
     int rightSpd = constrain(dynBase - (int)correction, P.minSpeed, 255);
@@ -133,60 +173,108 @@ void robot_runLostLineRecovery() {
 }
 
 // =========================================================================
-//  RED CUBE AVOIDANCE  (time-based, blocking)
+//  RED CUBE AVOIDANCE  +  Physic 4: Obstacle Side Memory
+//
+//  avoidPreferRight = 0 -> always avoid LEFT (6-step original sequence)
+//  avoidPreferRight = 1 -> auto-select direction from lastSeenSide:
+//      SIDE_LEFT  -> robot was curving left  -> obstacle on left  -> go RIGHT
+//      SIDE_RIGHT -> robot was curving right -> obstacle on right -> go LEFT
+//      SIDE_UNKNOWN -> default LEFT
+//
+//  All 6 steps are fully mirrored for the RIGHT-side avoidance path.
 // =========================================================================
 void robot_executeRedAvoid() {
     Serial.println(F("[AVOID] RED AVOIDANCE START"));
     int spd = P.avoidSpeed;
 
+    // ── Physic 4: choose direction ───────────────────────────────────────
+    bool goRight = false;
+    if (P.avoidPreferRight) {
+        if      (lastSeenSide == SIDE_LEFT)  goRight = true;   // obstacle on left
+        else if (lastSeenSide == SIDE_RIGHT) goRight = false;  // obstacle on right
+        else                                 goRight = false;  // unknown -> left
+        Serial.printf("[AVOID] Side memory: lastSeenSide=%s -> avoid %s\n",
+                      lastSeenSide == SIDE_LEFT  ? "LEFT"  :
+                      lastSeenSide == SIDE_RIGHT ? "RIGHT" : "UNKNOWN",
+                      goRight ? "RIGHT" : "LEFT");
+    } else {
+        Serial.println(F("[AVOID] Fixed LEFT avoidance (avoidPreferRight=0)"));
+    }
+
+    // ── Step 1: Reverse ──────────────────────────────────────────────────
     Serial.println(F("[AVOID] 1. Reverse"));
     motors_driveBackward(spd);
     delay(P.reverseAvoidTime);
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] 2. Pivot LEFT 90 deg"));
-    { unsigned long t = millis();
-      while (millis()-t < P.turn90AvoidTime) { motors_pivotLeft(spd); delay(5); } }
+    // ── Step 2: First 90 deg pivot ───────────────────────────────────────
+    if (goRight) {
+        Serial.println(F("[AVOID] 2. Pivot RIGHT 90 deg"));
+        unsigned long t = millis();
+        while (millis() - t < P.turn90AvoidTime) { motors_pivotRight(spd); delay(5); }
+    } else {
+        Serial.println(F("[AVOID] 2. Pivot LEFT 90 deg"));
+        unsigned long t = millis();
+        while (millis() - t < P.turn90AvoidTime) { motors_pivotLeft(spd); delay(5); }
+    }
     motors_stop(); delay(150);
 
+    // ── Step 3: Forward past obstacle ────────────────────────────────────
     Serial.println(F("[AVOID] 3. Forward past obstacle"));
     motors_driveStraight(spd);
     delay(P.forwardAvoidTime);
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] 4. Pivot RIGHT 90 deg"));
-    { unsigned long t = millis();
-      while (millis()-t < P.turn90AvoidTime) { motors_pivotRight(spd); delay(5); } }
+    // ── Step 4: Return 90 deg pivot (opposite direction) ─────────────────
+    if (goRight) {
+        Serial.println(F("[AVOID] 4. Pivot LEFT 90 deg"));
+        unsigned long t = millis();
+        while (millis() - t < P.turn90AvoidTime) { motors_pivotLeft(spd); delay(5); }
+    } else {
+        Serial.println(F("[AVOID] 4. Pivot RIGHT 90 deg"));
+        unsigned long t = millis();
+        while (millis() - t < P.turn90AvoidTime) { motors_pivotRight(spd); delay(5); }
+    }
     motors_stop(); delay(150);
 
+    // ── Step 5: Forward to re-cross line ─────────────────────────────────
     Serial.println(F("[AVOID] 5. Forward to re-cross line"));
     motors_driveStraight(spd);
     delay(P.forwardAvoidTime);
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] 6. Pivot LEFT - find line"));
-    { unsigned long t = millis();
-      while (millis()-t < P.timeoutRight) {
-          motors_pivotLeft(P.searchSpeed);
-          sensors_read();
-          if (sensors_isPathFoundPattern() || sensors_anyOn()) break;
-          delay(5);
-      } }
+    // ── Step 6: Final pivot to find line ─────────────────────────────────
+    if (goRight) {
+        Serial.println(F("[AVOID] 6. Pivot RIGHT - find line"));
+        unsigned long t = millis();
+        while (millis() - t < P.timeoutRight) {
+            motors_pivotRight(P.searchSpeed);
+            sensors_read();
+            if (sensors_isPathFoundPattern() || sensors_anyOn()) break;
+            delay(5);
+        }
+    } else {
+        Serial.println(F("[AVOID] 6. Pivot LEFT - find line"));
+        unsigned long t = millis();
+        while (millis() - t < P.timeoutRight) {
+            motors_pivotLeft(P.searchSpeed);
+            sensors_read();
+            if (sensors_isPathFoundPattern() || sensors_anyOn()) break;
+            delay(5);
+        }
+    }
     motors_stop(); delay(150);
 
-    Serial.println(F("[AVOID] Done - resume line follow"));
+    Serial.printf("[AVOID] Done (%s side) - resume line follow\n",
+                  goRight ? "RIGHT" : "LEFT");
     robot_resetRecovery();
     lastSeenSide = SIDE_UNKNOWN;
 }
 
 // =========================================================================
 //  ULTRASONIC MEDIAN HELPER
-//  Takes N readings, sorts them, returns the middle value.
-//  Readings above SPIKE_LIMIT are treated as invalid and clamped to
-//  SPIKE_LIMIT so they sink to the top of the sorted array and the
-//  median is unaffected.
 // =========================================================================
-static const float US_SPIKE_LIMIT = 40.0f;   // cm - anything above = bad echo
+static const float US_SPIKE_LIMIT = 40.0f;
 static const int   US_SAMPLES     = 5;
 
 static float _usMedian() {
@@ -194,9 +282,8 @@ static float _usMedian() {
     for (int i = 0; i < US_SAMPLES; i++) {
         float r = ultrasonic_getDistance();
         buf[i]  = (r > US_SPIKE_LIMIT) ? US_SPIKE_LIMIT : r;
-        delay(4);   // ~4 ms between pings avoids echo overlap
+        delay(4);
     }
-    // Bubble sort (tiny array - fine on ESP32)
     for (int i = 0; i < US_SAMPLES - 1; i++)
         for (int j = 0; j < US_SAMPLES - 1 - i; j++)
             if (buf[j] > buf[j+1]) { float t = buf[j]; buf[j] = buf[j+1]; buf[j+1] = t; }
@@ -205,49 +292,27 @@ static float _usMedian() {
 
 // =========================================================================
 //  GREEN CUBE PICK  (blocking)
-//
-//  FIX-P1: servo_open() called once cube is secured (gripper release
-//          was completely missing before - gate stayed closed forever)
-//
-//  FIX-P2: ultrasonic median filter (_usMedian) replaces raw single
-//          readings. Also requires CLOSE_COUNT consecutive readings
-//          inside greenPickDist before stopping, so one bad echo can't
-//          trigger a premature stop.
-//
-//  FIX-P3: after securing the cube:
-//          a) reverse away 400 ms so sensor clears the cube body
-//          b) set _pickDoneMs = millis() to start cooldown window
-//          c) main.cpp checks robot_pickCooldownActive() and skips
-//             the obstacle branch during cooldown
-//
-//  Servo angles (from test_servo_diag):
-//    1 deg   = gripper OPEN  (cube drops into pocket / released)
-//    110 deg = gripper CLOSED (cube gripped / held in pocket)
 // =========================================================================
-static const int CLOSE_COUNT = 3;  // consecutive good readings required
+static const int CLOSE_COUNT = 3;
 
 void robot_executeGreenPick() {
     Serial.println(F("[PICK] GREEN PICK START"));
-
-    // FIX-P1: Close gripper FIRST to be ready to capture the cube
-    // 110 deg = closed/grip position (from test_servo_diag)
-    servo_close();   // goes to P.servoHomeAngle = 110 deg
+    servo_close();
     Serial.println(F("[PICK] Gripper closed (110 deg). Approaching cube..."));
 
-    unsigned long deadline = millis() + 5000UL;
-    int closeStreak = 0;
+    unsigned long deadline  = millis() + 5000UL;
+    int           closeStreak = 0;
 
     while (millis() < deadline) {
-        // FIX-P2: use median of 5 readings instead of single raw reading
         float d = _usMedian();
         Serial.printf("[PICK] dist=%.1f cm (median)\n", d);
 
         if (d <= P.greenPickDist) {
             closeStreak++;
             Serial.printf("[PICK] In range %d/%d\n", closeStreak, CLOSE_COUNT);
-            if (closeStreak >= CLOSE_COUNT) break;   // confirmed, not a spike
+            if (closeStreak >= CLOSE_COUNT) break;
         } else {
-            closeStreak = 0;   // reset if reading jumps back up
+            closeStreak = 0;
             motors_setLeft(P.pickApproachSpeed,  true);
             motors_setRight(P.pickApproachSpeed, true);
         }
@@ -256,27 +321,21 @@ void robot_executeGreenPick() {
     motors_stop();
     delay(200);
 
-    // FIX-P1: open gripper to release / drop cube into pocket
-    // 1 deg = open position (from test_servo_diag)
     Serial.println(F("[PICK] Cube in range - opening gripper (1 deg)."));
-    servo_open();    // goes to P.servoPickAngle = 1 deg
-    delay(600);      // allow arm to fully sweep to 1 deg
+    servo_open();
+    delay(600);
 
-    // Re-close to hold cube in pocket during transport
     Serial.println(F("[PICK] Re-closing to hold cube for transport (110 deg)."));
-    servo_close();   // back to 110 deg to grip cube
+    servo_close();
     delay(400);
 
-    // FIX-P3a: reverse to clear the cube body from the ultrasonic cone
     Serial.println(F("[PICK] Reversing to clear sensor..."));
     motors_driveBackward(P.reverseSpeed);
     delay(400);
     motors_stop();
     delay(150);
 
-    // FIX-P3b: start cooldown clock - main.cpp ignores obstacle for 2.5 s
     _pickDoneMs = millis();
-
     Serial.println(F("[PICK] Cube secured. Resuming line follow."));
     robot_resetRecovery();
 }
