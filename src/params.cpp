@@ -21,11 +21,11 @@ Params P = {
     150,    // minSpeed
 
     2000UL, // timeoutLeft  (ms)
-    1600UL, // timeoutRight (ms)
-    160UL,  // forwardRecoverTime (ms)
+    1800UL, // timeoutRight (ms)
+    800UL,  // forwardRecoverTime (ms)
 
-    5.0f,  // kp
-    0.0f,   // kd
+    25.0f,  // kp
+    6.0f,   // kd
     0.50f,  // posFilter
     6.0f,   // widthKp
     2.0f,   // speedDrop
