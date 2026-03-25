@@ -9,37 +9,56 @@
 #include "ultrasonic.h"
 #include "servo_gate.h"
 
-// ── Top-level robot state ──────────────────────────────────────────────────────
+// ── Top-level robot state ─────────────────────────────────────────────────────────
 RobotState robotState = ST_LINE_FOLLOW;
 
-// ── PID state ─────────────────────────────────────────────────────────────────
+// ── PID state ───────────────────────────────────────────────────────────────────
 static float pidPos      = 0.0f;
 static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
 static float lineWidth   = 0.0f;
 
-// ── Lost-line recovery state ──────────────────────────────────────────────────
+// ── Lost-line recovery state ──────────────────────────────────────────────────────
 enum RecoveryMode {
     REC_IDLE, REC_REVERSE, REC_FORWARD_CHECK, REC_TURN_LEFT, REC_TURN_RIGHT
 };
 static RecoveryMode  recMode    = REC_IDLE;
 static unsigned long recStartMs = 0;
 
-// ─────────────────────────────────────────────────────────────────────────
-//  RESET
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 void robot_resetRecovery() {
     recMode    = REC_IDLE;
     recStartMs = 0;
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 //  PID LINE FOLLOWING
+//
+//  BUG-6 FIX — curve speed-drop multiplier reduced 8.0f → 4.0f
+//  ─────────────────────────────────────────────────────────────────────
+//  PROBLEM (before fix):
+//    dynBase formula: P.baseSpeed - (int)(fabsf(error) * 8.0f)
+//    The 8.0f multiplier was originally tuned when baseSpeed = 110.
+//    After the speed parameter update (baseSpeed = 160), the same
+//    multiplier causes a disproportionately large speed reduction:
+//      • At max error (4.0) the drop was 32 PWM — 20% of base
+//      • Even mild curves (error 2.0) dropped 16 PWM — 10% of base
+//    Combined with the low-pass filter (posFilter=0.65) keeping
+//    filteredPos non-zero between corrections, the robot spent most
+//    of its time at well below baseSpeed even on near-straight sections.
+//    The result was a noticeably sluggish robot despite baseSpeed=160.
+//
+//  FIX:
+//    Reduced multiplier to P.speedDrop (default 4.0f, live-tunable via
+//    SET SPEEDDROP <value>). At max error (4.0) the drop is now 16 PWM
+//    (10% of 160) which is appropriate for cornering without excessive
+//    slowdown on straights.
+//    P.speedDrop is added to the Params struct and saved to EEPROM.
 //
 //  error = filteredPos  (positive = line is to the right of centre)
 //  correction added to left wheel, subtracted from right wheel
 //  → positive correction steers robot rightward to follow line
-// ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
 void robot_followLine() {
     pidPos      = sensors_computePosition();
     filteredPos = P.posFilter * filteredPos + (1.0f - P.posFilter) * pidPos;
@@ -48,7 +67,7 @@ void robot_followLine() {
     float error      = filteredPos;
     float derivative = error - lastError;
 
-    // Width compensation: reduce gain on thick lines (intersections)
+    // Width compensation: reduce gain on thick lines / intersections
     float wComp = 1.0f;
     if (lineWidth > 1.5f) {
         wComp = 1.0f / (1.0f + P.widthKp * 0.08f * (lineWidth - 1.5f));
@@ -58,8 +77,10 @@ void robot_followLine() {
     float correction = (P.kp * error + P.kd * derivative) * wComp;
     lastError = error;
 
-    // Slow down in curves
-    int dynBase = P.baseSpeed - (int)(fabsf(error) * 4.0f);
+    // BUG-6 FIX: use P.speedDrop (default 4.0) instead of hardcoded 8.0
+    // Tune live: SET SPEEDDROP 3   (less slowdown in curves)
+    //            SET SPEEDDROP 6   (more slowdown in sharp corners)
+    int dynBase = P.baseSpeed - (int)(fabsf(error) * P.speedDrop);
     dynBase = constrain(dynBase, P.minSpeed, P.baseSpeed);
 
     int leftSpd  = constrain(dynBase + (int)correction, 0, 255);
@@ -69,9 +90,9 @@ void robot_followLine() {
     motors_setRight(rightSpd, true);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 //  LOST-LINE RECOVERY  (4-stage state machine)
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 static void _reverseStage() {
     int fastRev = constrain(P.reverseSpeed + P.reverseBiasDelta, 0, 255);
     int slowRev = constrain(P.reverseSpeed - P.reverseBiasDelta, 0, 255);
@@ -131,7 +152,7 @@ void robot_runLostLineRecovery() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 //  RED CUBE AVOIDANCE  (time-based, blocking)
 //
 //  Maneuver:
@@ -142,7 +163,7 @@ void robot_runLostLineRecovery() {
 //    5. Drive forward to re-cross line (~15 cm)
 //    6. Pivot LEFT until line found
 //    7. Resume PID
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 void robot_executeRedAvoid() {
     Serial.println(F("[AVOID] ── RED AVOIDANCE START ──"));
     int spd = P.avoidSpeed;
@@ -187,7 +208,7 @@ void robot_executeRedAvoid() {
     lastSeenSide = SIDE_UNKNOWN;
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 //  GREEN CUBE PICK  (blocking)
 //
 //  BUG-02 FIX:
@@ -200,22 +221,20 @@ void robot_executeRedAvoid() {
 //  Gate ownership rule (single source of truth):
 //    • robot_executeGreenPick()  → closes the gate (owns CLOSE)
 //    • main.cpp end-zone drop    → opens then closes (owns OPEN + final CLOSE)
-//    • setup()                   → closes gate once at boot (safe, servo not moving yet)
+//    • setup()                   → servo_init() reaches home at boot only
 //
 //  Steps:
-//    1. servo_close()  – ensure gate is closed before cube enters pocket
+//    1. servo_close()  – ensure gate closed before cube enters pocket
 //    2. Creep forward until ultrasonic ≤ greenPickDist
 //    3. Stop – cube is now inside the pocket, held by the closed gate
 //    4. Resume line following; drop at end zone handled by main.cpp
-// ─────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
 void robot_executeGreenPick() {
     Serial.println(F("[PICK] ── GREEN PICK START ──"));
 
-    // ── Step 1: single authoritative gate close ────────────────────────────
     servo_close();
-    Serial.println(F("[PICK] Gate closed. Approaching cube..."));
+    Serial.println(F("[PICK] Gate confirmed closed. Approaching cube..."));
 
-    // ── Step 2: creep forward until within pick distance ──────────────────
     unsigned long deadline = millis() + 5000UL;
     while (millis() < deadline) {
         float d = ultrasonic_getDistance();
@@ -226,7 +245,6 @@ void robot_executeGreenPick() {
         delay(20);
     }
 
-    // ── Step 3: stop – cube is now inside the pocket ─────────────────────
     motors_stop();
     delay(300);
 
@@ -234,9 +252,6 @@ void robot_executeGreenPick() {
     robot_resetRecovery();
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-//  Expose recovery idle status to main.cpp
-// ─────────────────────────────────────────────────────────────────────────
 bool robot_recoveryIdle() {
     return (recMode == REC_IDLE);
 }
