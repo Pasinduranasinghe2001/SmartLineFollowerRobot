@@ -25,8 +25,8 @@ Params P = {
     800UL,  // forwardRecoverTime (ms)
 
     25.0f,  // kp
-    6.0f,   // kd
-    0.50f,  // posFilter
+    9.0f,   // kd
+    0.0f,  // posFilter
     6.0f,   // widthKp
     2.0f,   // speedDrop
 
