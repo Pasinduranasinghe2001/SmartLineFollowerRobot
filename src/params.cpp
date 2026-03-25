@@ -16,23 +16,23 @@
 // ── Default parameter values ───────────────────────────────────────────────
 Params P = {
     // ── PID / line-follow ───────────────────────────────────────────────
-    200,    // baseSpeed
-    250,    // fastSpeed
-    150,    // slowSpeed
+    180,    // baseSpeed
+    215,    // fastSpeed
+    120,    // slowSpeed
     150,    // turnSpeed
-    180,    // sharpSpeed
+    170,    // sharpSpeed
     150,    // recoverSpeed
     150,    // searchSpeed
     180,     // reverseSpeed
-    18,     // reverseBiasDelta
+    20,     // reverseBiasDelta
     140,    // forwardRecoverSpeed
     120,     // minSpeed
 
     1800UL, // timeoutLeft  (ms)
-    4000UL, // timeoutRight (ms)
+    3000UL, // timeoutRight (ms)
     160UL,  // forwardRecoverTime (ms)
 
-    16.0f,  // kp
+    20.0f,  // kp
     5.0f,   // kd
     0.50f,  // posFilter
     6.0f,   // widthKp

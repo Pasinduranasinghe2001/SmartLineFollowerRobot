@@ -73,8 +73,8 @@
 
 #define DBG_DISABLE_MQTT       0          // 1 = skip WiFi entirely
 
-#define MQTT_WIFI_SSID         "YOUR_SSID"
-#define MQTT_WIFI_PASS         "YOUR_PASSWORD"
+#define MQTT_WIFI_SSID         "Dialog 4G 720"
+#define MQTT_WIFI_PASS         "82601557"
 #define MQTT_BROKER            "192.168.1.100"  // broker IP on your LAN
 #define MQTT_PORT              1883
 #define MQTT_CLIENT_ID         "ESP32Robot"
