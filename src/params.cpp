@@ -24,7 +24,7 @@
 Params P = {
     // PID / line-follow
     180,    // baseSpeed
-    215,    // fastSpeed
+    200,    // fastSpeed
     120,    // slowSpeed
     150,    // turnSpeed
     170,    // sharpSpeed
@@ -66,14 +66,14 @@ Params P = {
     650UL,  // turn90AvoidTime
 
     17.0f,  // obstacleSlowDist (cm)
-    9.0f,   // colorCheckDist   (cm)
-    5.5f,   // greenPickDist    (cm)
+    8.0f,   // colorCheckDist   (cm)
+    6.0f,   // greenPickDist    (cm)
 
     120,    // redThresh
     100,    // greenThresh
 
-    110,    // servoHomeAngle  (gate CLOSED = 110 deg)
-    1       // servoPickAngle  (gate OPEN   =   1 deg)
+    60,    // servoHomeAngle  (gate CLOSED = 110 deg)
+    120       // servoPickAngle  (gate OPEN   =   1 deg)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
