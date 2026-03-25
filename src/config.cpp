@@ -10,7 +10,7 @@
 // ── IR Sensors ────────────────────────────────────────────────────────────
 //  GPIO 32,33,34,35 are input-only ADC pins; GPIO 27 is bidirectional.
 //  All five are safe for analogRead() only — do not set as OUTPUT.
-const int IR_PIN[5] = { 32, 33, 34, 35, 27 };   // S1(left) … S5(right)
+const int IR_PIN[7] = { 32, 33, 34, 35, 27, 36, 39 };   // S1(left) … S5(right)
 
 // ── Right Motor  (L298N channel A) ────────────────────────────────────────
 const int PIN_ENA =  5;    // PWM enable – LEDC channel 0

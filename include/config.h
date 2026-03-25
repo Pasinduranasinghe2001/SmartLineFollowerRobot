@@ -90,7 +90,7 @@
 
 // ─── IR Sensors  (input-only ADC GPIOs) ──────────────────────────────────────
 //  S1 = far-left   …   S5 = far-right
-extern const int IR_PIN[5];          // { 32, 33, 34, 35, 27 }
+extern const int IR_PIN[7];          // { 32, 33, 34, 35, 27, 36, 39  }
 
 // ─── Right Motor  (L298N channel A) ──────────────────────────────────────────
 extern const int PIN_ENA;            //  5  – PWM via LEDC channel 0
