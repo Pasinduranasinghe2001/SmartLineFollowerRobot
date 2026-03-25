@@ -16,8 +16,9 @@
 //           1 deg  = OPEN   (gripper releases cube)
 //           110 deg = CLOSED (gripper holds cube)
 //
-//  Serial commands (115200 baud):
+//  Serial / MQTT commands (115200 baud):
 //    STATUS | SAVE | LOAD | SET KEY VALUE
+//    MQTT topic: robot/params/set  {"key":"KP","value":"18.5"}
 // =========================================================================
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -30,6 +31,7 @@
 #include "color.h"
 #include "servo_gate.h"
 #include "robot.h"
+#include "mqtt_params.h"
 
 static bool cubeOnBoard = false;
 
@@ -37,16 +39,13 @@ static bool cubeOnBoard = false;
 static const unsigned long END_ZONE_DARK_MS = 500UL;
 static unsigned long _darkSince = 0;
 
-// DBG_VERBOSE timing
-static unsigned long _lastVerboseMs = 0;
-
 // =========================================================================
 //  DEBUG BANNER
 // =========================================================================
 static void _printDebugBanner() {
 #if DBG_DISABLE_OBSTACLE || DBG_DISABLE_COLOR  || DBG_DISABLE_SERVO  || \
     DBG_DISABLE_ENDZONE  || DBG_DISABLE_RECOVERY || DBG_DISABLE_SPEEDDROP || \
-    DBG_VERBOSE
+    DBG_VERBOSE          || DBG_DISABLE_MQTT
     Serial.println(F("\n+----------------------------------------+"));
     Serial.println(F(  "|   DEBUG MODE - NOT FOR COMPETITION!    |"));
     Serial.println(F(  "+----------------------------------------+"));
@@ -63,14 +62,13 @@ static void _printDebugBanner() {
     Serial.println(F("  [DBG] END-ZONE drop       : DISABLED"));
 #endif
 #if DBG_DISABLE_RECOVERY
-    Serial.println(F("  [DBG] LOST-LINE recovery  : DISABLED (motors stop on dark)"));
+    Serial.println(F("  [DBG] LOST-LINE recovery  : DISABLED"));
 #endif
 #if DBG_DISABLE_SPEEDDROP
-    Serial.println(F("  [DBG] SPEED-DROP penalty  : DISABLED (flat baseSpeed always)"));
+    Serial.println(F("  [DBG] SPEED-DROP penalty  : DISABLED"));
 #endif
-#if DBG_VERBOSE
-    Serial.printf (  "  [DBG] VERBOSE output      : ON every %d ms\n",
-                     DBG_VERBOSE_INTERVAL);
+#if DBG_DISABLE_MQTT
+    Serial.println(F("  [DBG] MQTT / WiFi         : DISABLED"));
 #endif
     Serial.println();
 #endif
@@ -99,6 +97,9 @@ void setup() {
     color_init();
     servo_init();
 
+    // MQTT init - non-blocking, robot works offline if WiFi unavailable
+    mqtt_init();
+
     _printDebugBanner();
 
     robotState   = ST_LINE_FOLLOW;
@@ -122,18 +123,17 @@ void setup() {
 //  loop()
 // =========================================================================
 void loop() {
+    // MQTT: pump the client, handle any incoming messages, reconnect if needed
+    mqtt_loop();
+
     params_handleSerial();
 
     switch (robotState) {
 
         // Normal PID line following
         case ST_LINE_FOLLOW: {
-
 #if DBG_DISABLE_OBSTACLE
-            // Obstacle gating completely skipped
 #else
-            // FIX-P3: skip obstacle detection during post-pick cooldown
-            // so the just-picked cube is not re-detected as RED immediately
             if (!robot_pickCooldownActive()) {
                 float dist = ultrasonic_getCached();
                 if (dist < P.obstacleSlowDist) {
@@ -142,7 +142,6 @@ void loop() {
                     break;
                 }
             } else {
-                // Cooldown active - log once per second so we can see it
                 static unsigned long _lastCoolLog = 0;
                 if (millis() - _lastCoolLog > 1000UL) {
                     Serial.println(F("[PICK] Cooldown active - obstacle check suppressed"));
@@ -150,7 +149,6 @@ void loop() {
                 }
             }
 #endif
-
             sensors_read();
             if (!sensors_allDark()) {
                 sensors_updateLastSeenSide();
@@ -176,7 +174,6 @@ void loop() {
         // Slowing and approaching obstacle for colour read
         case ST_OBSTACLE_SLOW: {
             float dist = ultrasonic_getCached();
-
             if (dist > P.obstacleSlowDist + 3.0f) {
                 Serial.println(F("[STATE] Clear -> LINE_FOLLOW"));
                 robotState = ST_LINE_FOLLOW;
@@ -186,14 +183,13 @@ void loop() {
                 motors_stop();
                 Serial.printf("[STATE] dist %.1f cm -> COLOR_DETECT\n", dist);
 #if DBG_DISABLE_COLOR
-                Serial.println(F("[DBG] Colour detect disabled -> returning to LINE_FOLLOW."));
+                Serial.println(F("[DBG] Colour detect disabled -> LINE_FOLLOW."));
                 robotState = ST_LINE_FOLLOW;
 #else
                 robotState = ST_COLOR_DETECT;
 #endif
                 break;
             }
-
             sensors_read();
             int savedBase = P.baseSpeed;
             P.baseSpeed   = P.approachSpeed;
@@ -240,7 +236,6 @@ void loop() {
 
     // End-zone drop (debounced)
 #if DBG_DISABLE_ENDZONE
-    // End-zone drop skipped entirely
 #else
     if (cubeOnBoard) {
         bool allDarkNow = sensors_allDark();
