@@ -1,5 +1,5 @@
 // =========================================================================
-//  robot.h  –  Top-level robot state machine
+//  robot.h  -  Top-level robot state machine
 // =========================================================================
 #pragma once
 
@@ -18,4 +18,5 @@ void  robot_runLostLineRecovery();
 void  robot_resetRecovery();
 void  robot_executeRedAvoid();
 void  robot_executeGreenPick();
-bool  robot_recoveryIdle();     // true if REC_IDLE
+bool  robot_recoveryIdle();          // true if recovery state == REC_IDLE
+bool  robot_pickCooldownActive();    // true for 2.5 s after green pick completes
