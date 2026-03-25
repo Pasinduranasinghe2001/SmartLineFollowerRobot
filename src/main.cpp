@@ -9,24 +9,11 @@
 //       `-- GREEN cube ->  pick (close gate, carry to end zone)
 //    4. End zone  ->  open gate, drop green cube
 //
-//  End-zone detection (3-phase pattern matching):
-//    The physical end-zone marking is a wide white band crossing the full
-//    track width, with the track ending just after it. As the robot crosses
-//    this band while carrying the cube, the sensor pattern is:
+//  End-zone: 3-phase pattern 1111111->0000000->1111111
 //
-//      Phase 1  WAIT_FIRST_ON:   1111111  (all 7 over white band)
-//      Phase 2  WAIT_ALL_OFF:    0000000  (all 7 over dark gap after band)
-//      Phase 3  WAIT_SECOND_ON:  1111111  (all 7 over second white band / end)
-//                                          -> trigger drop
-//
-//    Each phase must hold for endZoneHoldMs (default 60 ms) before
-//    advancing. Any failure resets back to Phase 1.
-//    This pattern CANNOT be faked by a T-junction, bump, or single glitch.
-//
-//  Board  : ESP32 DevKit (38-pin)
-//  Driver : L298N  (right=ch-A, left=ch-B)
-//  Sensors: MD0370 7-ch digital IR, HC-SR04, TCS3200
-//  Servo  : single MG996R drop-gate
+//  Debug: set DBG_VERBOSE=1 in config.h to enable PID log
+//         Serial Monitor shows HUMAN + CSV lines every DBG_VERBOSE_INTERVAL ms
+//         CSV can be copy-pasted into Excel / Serial Plotter for graphs
 // =========================================================================
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -41,28 +28,22 @@
 #include "robot.h"
 #include "mqtt_params.h"
 
-// ── Cube state ────────────────────────────────────────────────────────────
+// Cube state
 static bool cubeOnBoard = false;
 
-// ── End-zone 3-phase detector state ─────────────────────────────────────────
-//
-//  IDLE            - cubeOnBoard is false; detector is off
-//  WAIT_FIRST_ON   - watching for all 7 sensors to go ON  (1111111)
-//  WAIT_ALL_OFF    - sensors went allOn; now watching for allDark (0000000)
-//  WAIT_SECOND_ON  - sensors went dark;  now watching for allOn again (1111111)
-//                    when this phase holds -> trigger drop
-//
+// Debug log timer
+static unsigned long _lastDebugMs = 0;
+
+// End-zone 3-phase detector
 enum EndZonePhase {
     EZ_IDLE,
     EZ_WAIT_FIRST_ON,
     EZ_WAIT_ALL_OFF,
     EZ_WAIT_SECOND_ON
 };
+static EndZonePhase  _ezPhase   = EZ_IDLE;
+static unsigned long _ezPhaseMs = 0;
 
-static EndZonePhase   _ezPhase     = EZ_IDLE;
-static unsigned long  _ezPhaseMs   = 0;   // millis() when current phase condition first held
-
-// Reset detector to beginning of phase 1
 static void _ezReset() {
     _ezPhase   = EZ_WAIT_FIRST_ON;
     _ezPhaseMs = 0;
@@ -99,6 +80,12 @@ void setup() {
     robot_resetRecovery();
     servo_close();
 
+#if DBG_VERBOSE
+    Serial.println(F("[BOOT] DBG_VERBOSE=1: PID log active."));
+    Serial.printf ("[BOOT] Log interval: %d ms\n", DBG_VERBOSE_INTERVAL);
+    Serial.println(F("[BOOT] CSV header will print on first followLine call."));
+#endif
+
     Serial.println(F("[BOOT] Starting in 2 s..."));
     delay(2000);
     Serial.println(F("[BOOT] Running."));
@@ -109,21 +96,21 @@ void loop() {
     mqtt_loop();
     params_handleSerial();
 
-    // ── Main robot state machine ───────────────────────────────────────────────
+    // Cache ultrasonic for this loop tick and write into debug snapshot
+    float dist = ultrasonic_getCached();
+    pidSnap.dist = dist;
+
+    // ─ Main robot state machine ──────────────────────────────────────────────
     switch (robotState) {
 
-        // Normal PID line following
         case ST_LINE_FOLLOW: {
-            // Skip obstacle check while pick cooldown is active
             if (!robot_pickCooldownActive()) {
-                float dist = ultrasonic_getCached();
                 if (dist < P.obstacleSlowDist) {
                     Serial.printf("[STATE] Obstacle %.1f cm -> OBSTACLE_SLOW\n", dist);
                     robotState = ST_OBSTACLE_SLOW;
                     break;
                 }
             }
-
             sensors_read();
             if (!sensors_allDark()) {
                 sensors_updateLastSeenSide();
@@ -137,10 +124,7 @@ void loop() {
             break;
         }
 
-        // Slowing and approaching obstacle
         case ST_OBSTACLE_SLOW: {
-            float dist = ultrasonic_getCached();
-
             if (dist > P.obstacleSlowDist + 3.0f) {
                 Serial.println(F("[STATE] Clear -> LINE_FOLLOW"));
                 robotState = ST_LINE_FOLLOW;
@@ -152,7 +136,6 @@ void loop() {
                 robotState = ST_COLOR_DETECT;
                 break;
             }
-
             sensors_read();
             int savedBase = P.baseSpeed;
             P.baseSpeed   = P.approachSpeed;
@@ -166,138 +149,89 @@ void loop() {
             break;
         }
 
-        // Stopped: read colour
         case ST_COLOR_DETECT: {
             motors_stop();
             delay(200);
             ColorResult col = color_detect();
-
-            if      (col == COLOR_RED)   { Serial.println(F("[STATE] RED -> AVOID"));     robotState = ST_RED_AVOID;   }
-            else if (col == COLOR_GREEN) { Serial.println(F("[STATE] GREEN -> PICK"));    robotState = ST_GREEN_PICK;  }
+            if      (col == COLOR_RED)   { Serial.println(F("[STATE] RED -> AVOID"));      robotState = ST_RED_AVOID;   }
+            else if (col == COLOR_GREEN) { Serial.println(F("[STATE] GREEN -> PICK"));     robotState = ST_GREEN_PICK;  }
             else                         { Serial.println(F("[STATE] Unknown -> FOLLOW")); robotState = ST_LINE_FOLLOW; }
             break;
         }
 
-        // Bypass red cube
         case ST_RED_AVOID:
             robot_executeRedAvoid();
             robotState = ST_LINE_FOLLOW;
             break;
 
-        // Pick green cube
         case ST_GREEN_PICK:
             robot_executeGreenPick();
             cubeOnBoard  = true;
-            _ezPhase     = EZ_IDLE;   // will be activated below on next loop
+            _ezPhase     = EZ_IDLE;
             _ezPhaseMs   = 0;
             Serial.println(F("[STATE] Cube secured -> continue to end zone"));
             robotState = ST_LINE_FOLLOW;
             break;
     }
 
-    // ── End-zone 3-phase detector ──────────────────────────────────────────────
-    //
-    //  Only runs when cubeOnBoard == true.
-    //  Physical marking the robot crosses:
-    //
-    //    |== white band ==|== dark gap ==|== white band ==| track ends
-    //       1111111            0000000        1111111
-    //       Phase 1            Phase 2        Phase 3 -> DROP
-    //
-    //  Each phase must hold for P.endZoneHoldMs ms.
-    //  If a phase breaks early (noise/bump), detector resets to Phase 1.
-    //
-    if (cubeOnBoard) {
+    // ─ PID debug log (interval timer) ────────────────────────────────────────
+#if DBG_VERBOSE
+    if (millis() - _lastDebugMs >= DBG_VERBOSE_INTERVAL) {
+        _lastDebugMs = millis();
+        robot_debugLog();
+    }
+#endif
 
-        // Activate detector after pick
-        if (_ezPhase == EZ_IDLE) {
-            _ezReset();   // -> EZ_WAIT_FIRST_ON
-        }
+    // ─ End-zone 3-phase detector ──────────────────────────────────────────────
+    if (cubeOnBoard) {
+        if (_ezPhase == EZ_IDLE) _ezReset();
 
         sensors_read();
         unsigned long now = millis();
 
         switch (_ezPhase) {
-
-            // ─ Phase 1: wait for all 7 sensors to see the line (1111111) ────
             case EZ_WAIT_FIRST_ON:
                 if (sensors_allOn()) {
-                    if (_ezPhaseMs == 0) {
-                        _ezPhaseMs = now;
-                        Serial.println(F("[ENDZONE] Phase1: allOn started"));
-                    } else if (now - _ezPhaseMs >= P.endZoneHoldMs) {
-                        Serial.printf("[ENDZONE] Phase1 confirmed (%lu ms) -> WAIT_ALL_OFF\n",
-                                      now - _ezPhaseMs);
-                        _ezPhase   = EZ_WAIT_ALL_OFF;
-                        _ezPhaseMs = 0;
+                    if (_ezPhaseMs == 0) { _ezPhaseMs = now; Serial.println(F("[ENDZONE] Phase1: allOn started")); }
+                    else if (now - _ezPhaseMs >= P.endZoneHoldMs) {
+                        Serial.printf("[ENDZONE] Phase1 confirmed (%lu ms) -> WAIT_ALL_OFF\n", now - _ezPhaseMs);
+                        _ezPhase = EZ_WAIT_ALL_OFF; _ezPhaseMs = 0;
                     }
                 } else {
-                    // Condition broke - reset timer (but stay in phase 1)
-                    if (_ezPhaseMs != 0) {
-                        Serial.println(F("[ENDZONE] Phase1 broken - restart timer"));
-                        _ezPhaseMs = 0;
-                    }
+                    if (_ezPhaseMs != 0) { Serial.println(F("[ENDZONE] Phase1 broken")); _ezPhaseMs = 0; }
                 }
                 break;
 
-            // ─ Phase 2: wait for all 7 sensors to go dark (0000000) ──────
             case EZ_WAIT_ALL_OFF:
                 if (sensors_allDark()) {
-                    if (_ezPhaseMs == 0) {
-                        _ezPhaseMs = now;
-                        Serial.println(F("[ENDZONE] Phase2: allDark started"));
-                    } else if (now - _ezPhaseMs >= P.endZoneHoldMs) {
-                        Serial.printf("[ENDZONE] Phase2 confirmed (%lu ms) -> WAIT_SECOND_ON\n",
-                                      now - _ezPhaseMs);
-                        _ezPhase   = EZ_WAIT_SECOND_ON;
-                        _ezPhaseMs = 0;
+                    if (_ezPhaseMs == 0) { _ezPhaseMs = now; Serial.println(F("[ENDZONE] Phase2: allDark started")); }
+                    else if (now - _ezPhaseMs >= P.endZoneHoldMs) {
+                        Serial.printf("[ENDZONE] Phase2 confirmed (%lu ms) -> WAIT_SECOND_ON\n", now - _ezPhaseMs);
+                        _ezPhase = EZ_WAIT_SECOND_ON; _ezPhaseMs = 0;
                     }
                 } else {
-                    // Line appeared again before dark was confirmed -> full reset
-                    if (_ezPhaseMs != 0 || sensors_anyOn()) {
-                        Serial.println(F("[ENDZONE] Phase2 broken - full reset"));
-                        _ezReset();
-                    }
+                    if (_ezPhaseMs != 0 || sensors_anyOn()) { Serial.println(F("[ENDZONE] Phase2 broken - full reset")); _ezReset(); }
                 }
                 break;
 
-            // ─ Phase 3: wait for all 7 to go ON again (1111111) -> DROP ──
             case EZ_WAIT_SECOND_ON:
                 if (sensors_allOn()) {
-                    if (_ezPhaseMs == 0) {
-                        _ezPhaseMs = now;
-                        Serial.println(F("[ENDZONE] Phase3: allOn started"));
-                    } else if (now - _ezPhaseMs >= P.endZoneHoldMs) {
-                        // ──────────── CONFIRMED END ZONE ────────────
-                        Serial.printf("[ENDZONE] Phase3 confirmed (%lu ms) -> DROP\n",
-                                      now - _ezPhaseMs);
-                        motors_stop();
-                        delay(300);
-
+                    if (_ezPhaseMs == 0) { _ezPhaseMs = now; Serial.println(F("[ENDZONE] Phase3: allOn started")); }
+                    else if (now - _ezPhaseMs >= P.endZoneHoldMs) {
+                        Serial.printf("[ENDZONE] Phase3 confirmed (%lu ms) -> DROP\n", now - _ezPhaseMs);
+                        motors_stop(); delay(300);
                         Serial.println(F("[DROP] Opening gate..."));
-                        servo_open();     // release cube
-                        delay(1200);
-                        servo_close();    // return arm
-                        delay(300);
-
-                        cubeOnBoard = false;
-                        _ezPhase    = EZ_IDLE;
-                        _ezPhaseMs  = 0;
-
+                        servo_open(); delay(1200); servo_close(); delay(300);
+                        cubeOnBoard = false; _ezPhase = EZ_IDLE; _ezPhaseMs = 0;
                         Serial.println(F("[DROP] Done. Robot halted."));
-                        while (true) delay(100);   // halt until power cycle
+                        while (true) delay(100);
                     }
                 } else {
-                    // Dark again before second allOn confirmed -> full reset
-                    if (_ezPhaseMs != 0 || !sensors_anyOn()) {
-                        Serial.println(F("[ENDZONE] Phase3 broken - full reset"));
-                        _ezReset();
-                    }
+                    if (_ezPhaseMs != 0 || !sensors_anyOn()) { Serial.println(F("[ENDZONE] Phase3 broken - full reset")); _ezReset(); }
                 }
                 break;
 
-            default:
-                break;
+            default: break;
         }
     }
 

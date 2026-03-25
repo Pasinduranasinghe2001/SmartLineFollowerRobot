@@ -1,22 +1,10 @@
 // =========================================================================
 //  robot.cpp  -  PID line follow + lost-line recovery + obstacle + pick
 //
-//  Physic 3 - Curvature-Adaptive Speed:
-//    robot_followLine() maintains a consecutive-loop counter.
-//    When |filteredPos| > P.curveDetectThresh for >= P.curveConfirmLoops
-//    loops the dynBase is capped at P.curveSlowSpeed instead of baseSpeed.
-//    A separate exit hysteresis (CURVE_EXIT_LOOPS) prevents chattering.
-//
-//  Physic 4 - Obstacle Side Memory:
-//    robot_executeRedAvoid() reads P.avoidPreferRight.
-//    0 = always avoid left (original).
-//    1 = auto-select: SIDE_LEFT -> pivot RIGHT, SIDE_RIGHT -> pivot LEFT.
-//    All 6 avoidance steps are mirrored for the right-side case.
-//
-//  Previous fixes retained:
-//    FIX-P1: servo open/close sequence in executeGreenPick
-//    FIX-P2: ultrasonic median filter + hysteresis count
-//    FIX-P3: reverse after pick + 2.5s cooldown
+//  Physic 3 - Curvature-Adaptive Speed
+//  Physic 4 - Obstacle Side Memory
+//  Debug    - PidDebugSnapshot written every followLine() call
+//             robot_debugLog() prints HUMAN + CSV on interval timer
 // =========================================================================
 #include <Arduino.h>
 #include "robot.h"
@@ -25,9 +13,13 @@
 #include "sensors.h"
 #include "ultrasonic.h"
 #include "servo_gate.h"
+#include "config.h"
 
 // Top-level robot state
 RobotState robotState = ST_LINE_FOLLOW;
+
+// PID snapshot (exported - read by robot_debugLog)
+PidDebugSnapshot pidSnap;
 
 // PID state
 static float pidPos      = 0.0f;
@@ -35,10 +27,10 @@ static float filteredPos = 0.0f;
 static float lastError   = 0.0f;
 
 // Physic 3: curve mode state
-static int  _curveAboveCount = 0;  // consecutive loops above threshold
-static int  _curveBelowCount = 0;  // consecutive loops below threshold (exit)
+static int  _curveAboveCount = 0;
+static int  _curveBelowCount = 0;
 static bool _inCurveMode     = false;
-static const int CURVE_EXIT_LOOPS = 5;  // loops below thresh before exiting
+static const int CURVE_EXIT_LOOPS = 5;
 
 // Lost-line recovery state
 enum RecoveryMode {
@@ -47,7 +39,7 @@ enum RecoveryMode {
 static RecoveryMode  recMode    = REC_IDLE;
 static unsigned long recStartMs = 0;
 
-// FIX-P3: cooldown after pick
+// Cooldown after pick
 static unsigned long _pickDoneMs = 0;
 static const unsigned long PICK_COOLDOWN_MS = 2500UL;
 
@@ -62,7 +54,7 @@ void robot_resetRecovery() {
 }
 
 // =========================================================================
-//  PID LINE FOLLOWING  +  Physic 3: Curvature-Adaptive Speed
+//  PID LINE FOLLOWING  +  Physic 3  +  Debug Snapshot
 // =========================================================================
 void robot_followLine() {
     pidPos      = sensors_computePosition();
@@ -73,9 +65,7 @@ void robot_followLine() {
     float correction = P.kp * error + P.kd * derivative;
     lastError = error;
 
-    // ── Physic 3: update curve mode ──────────────────────────────────────
-    //  Entry: |error| above threshold for N consecutive loops
-    //  Exit : |error| below threshold for CURVE_EXIT_LOOPS loops (hysteresis)
+    // ─ Physic 3: curve mode ─────────────────────────────────────────────
     if (fabsf(error) > P.curveDetectThresh) {
         _curveAboveCount++;
         _curveBelowCount = 0;
@@ -96,10 +86,7 @@ void robot_followLine() {
         }
     }
 
-    // Select effective base speed
     int effectiveBase = _inCurveMode ? P.curveSlowSpeed : P.baseSpeed;
-
-    // Apply speedDrop on top of effective base
     int dynBase = effectiveBase - (int)(fabsf(error) * P.speedDrop);
     dynBase = constrain(dynBase, P.minSpeed, effectiveBase);
 
@@ -108,6 +95,111 @@ void robot_followLine() {
 
     motors_setLeft(leftSpd,   true);
     motors_setRight(rightSpd, true);
+
+    // ─ Write debug snapshot (always, cheap) ─────────────────────────────
+    pidSnap.rawPos        = pidPos;
+    pidSnap.filteredPos   = filteredPos;
+    pidSnap.error         = error;
+    pidSnap.derivative    = derivative;
+    pidSnap.correction    = correction;
+    pidSnap.dynBase       = dynBase;
+    pidSnap.effectiveBase = effectiveBase;
+    pidSnap.leftSpd       = leftSpd;
+    pidSnap.rightSpd      = rightSpd;
+    pidSnap.inCurveMode   = _inCurveMode;
+    pidSnap.curveAbove    = _curveAboveCount;
+    pidSnap.loopMs        = millis();
+    // dist is written by main.cpp before calling followLine (ultrasonic_getCached)
+}
+
+// =========================================================================
+//  DEBUG LOG  -  called from main.cpp every DBG_VERBOSE_INTERVAL ms
+//
+//  Output format A - HUMAN (easy to read in Serial Monitor):
+//    [IR]  ...XX...   rawPos=+1.33  filt=+0.92
+//    [PID] err=+0.92  deriv=-0.21  corr=+21.6
+//          dyn=177  base=180  L=198  R=155  CURVE=OFF(2)
+//          dist=35.0cm  t=12345ms
+//
+//  Output format B - CSV (one line, for Serial Plotter / Excel):
+//    t_ms,rawPos,filtPos,error,derivative,correction,dynBase,leftSpd,rightSpd,curveMode,dist
+//    12345,1.33,0.92,0.92,-0.21,21.6,177,198,155,0,35.0
+//
+//  CSV header is printed ONCE on the first call so Serial Plotter
+//  labels all columns automatically.
+// =========================================================================
+void robot_debugLog() {
+#if DBG_VERBOSE
+    static bool _headerPrinted = false;
+
+    // ─ CSV header (once) ─────────────────────────────────────────────────
+    if (!_headerPrinted) {
+        Serial.println(F("\n[DBG] PID verbose log enabled"));
+        Serial.println(F("[DBG] CSV columns:"));
+        Serial.println(F("t_ms,rawPos,filtPos,error,derivative,correction,"
+                         "dynBase,effectiveBase,leftSpd,rightSpd,curveMode,"
+                         "curveAboveCount,dist_cm"));
+        _headerPrinted = true;
+    }
+
+    // ─ Sensor bitmap ───────────────────────────────────────────────────
+    Serial.print(F("[IR]  "));
+    for (int i = 0; i < IR_SENSOR_COUNT; i++)
+        Serial.print(irOn[i] ? 'X' : '.');
+    Serial.printf("  raw=%+.2f  filt=%+.2f  side=%s\n",
+                  pidSnap.rawPos,
+                  pidSnap.filteredPos,
+                  lastSeenSide == SIDE_LEFT   ? "L" :
+                  lastSeenSide == SIDE_RIGHT  ? "R" :
+                  lastSeenSide == SIDE_CENTER ? "C" : "?");
+
+    // ─ PID internals ─────────────────────────────────────────────────
+    Serial.printf("[PID] err=%+.2f  deriv=%+.2f  corr=%+.1f\n",
+                  pidSnap.error,
+                  pidSnap.derivative,
+                  pidSnap.correction);
+    Serial.printf("      dyn=%d  base=%d(%s)  L=%d  R=%d  CURVE=%s(%d)\n",
+                  pidSnap.dynBase,
+                  pidSnap.effectiveBase,
+                  pidSnap.inCurveMode ? "SLOW" : "NORM",
+                  pidSnap.leftSpd,
+                  pidSnap.rightSpd,
+                  pidSnap.inCurveMode ? "ON " : "OFF",
+                  pidSnap.curveAbove);
+    Serial.printf("      dist=%.1fcm  t=%lums\n",
+                  pidSnap.dist,
+                  pidSnap.loopMs);
+
+    // ─ Tuning hints (auto-generated based on current values) ──────────
+    if (fabsf(pidSnap.correction) > 0.8f * pidSnap.effectiveBase) {
+        Serial.println(F("[HINT] correction > 80% of base -> KP may be too high"));
+    }
+    if (pidSnap.dynBase <= P.minSpeed && fabsf(pidSnap.error) < 1.0f) {
+        Serial.println(F("[HINT] dynBase clamped to minSpeed on low error -> raise minSpeed or lower speedDrop"));
+    }
+    if (pidSnap.inCurveMode && pidSnap.curveAbove > 20) {
+        Serial.println(F("[HINT] CURVE mode held >20 loops -> curveDetectThresh may be too low"));
+    }
+    if (fabsf(pidSnap.derivative) > fabsf(pidSnap.error) * 2.0f) {
+        Serial.println(F("[HINT] derivative >> error -> sensor noise or KD too high"));
+    }
+
+    // ─ CSV line (for Serial Plotter / Excel) ───────────────────────────
+    Serial.printf("%lu,%.2f,%.2f,%.2f,%.2f,%.1f,%d,%d,%d,%d,%d,%d,%.1f\n",
+                  pidSnap.loopMs,
+                  pidSnap.rawPos,
+                  pidSnap.filteredPos,
+                  pidSnap.error,
+                  pidSnap.derivative,
+                  pidSnap.correction,
+                  pidSnap.dynBase,
+                  pidSnap.effectiveBase,
+                  pidSnap.leftSpd,
+                  pidSnap.rightSpd,
+                  (int)pidSnap.inCurveMode,
+                  pidSnap.curveAbove,
+                  pidSnap.dist);
+#endif
 }
 
 // =========================================================================
@@ -174,25 +266,16 @@ void robot_runLostLineRecovery() {
 
 // =========================================================================
 //  RED CUBE AVOIDANCE  +  Physic 4: Obstacle Side Memory
-//
-//  avoidPreferRight = 0 -> always avoid LEFT (6-step original sequence)
-//  avoidPreferRight = 1 -> auto-select direction from lastSeenSide:
-//      SIDE_LEFT  -> robot was curving left  -> obstacle on left  -> go RIGHT
-//      SIDE_RIGHT -> robot was curving right -> obstacle on right -> go LEFT
-//      SIDE_UNKNOWN -> default LEFT
-//
-//  All 6 steps are fully mirrored for the RIGHT-side avoidance path.
 // =========================================================================
 void robot_executeRedAvoid() {
     Serial.println(F("[AVOID] RED AVOIDANCE START"));
     int spd = P.avoidSpeed;
 
-    // ── Physic 4: choose direction ───────────────────────────────────────
     bool goRight = false;
     if (P.avoidPreferRight) {
-        if      (lastSeenSide == SIDE_LEFT)  goRight = true;   // obstacle on left
-        else if (lastSeenSide == SIDE_RIGHT) goRight = false;  // obstacle on right
-        else                                 goRight = false;  // unknown -> left
+        if      (lastSeenSide == SIDE_LEFT)  goRight = true;
+        else if (lastSeenSide == SIDE_RIGHT) goRight = false;
+        else                                 goRight = false;
         Serial.printf("[AVOID] Side memory: lastSeenSide=%s -> avoid %s\n",
                       lastSeenSide == SIDE_LEFT  ? "LEFT"  :
                       lastSeenSide == SIDE_RIGHT ? "RIGHT" : "UNKNOWN",
@@ -201,13 +284,11 @@ void robot_executeRedAvoid() {
         Serial.println(F("[AVOID] Fixed LEFT avoidance (avoidPreferRight=0)"));
     }
 
-    // ── Step 1: Reverse ──────────────────────────────────────────────────
     Serial.println(F("[AVOID] 1. Reverse"));
     motors_driveBackward(spd);
     delay(P.reverseAvoidTime);
     motors_stop(); delay(150);
 
-    // ── Step 2: First 90 deg pivot ───────────────────────────────────────
     if (goRight) {
         Serial.println(F("[AVOID] 2. Pivot RIGHT 90 deg"));
         unsigned long t = millis();
@@ -219,13 +300,11 @@ void robot_executeRedAvoid() {
     }
     motors_stop(); delay(150);
 
-    // ── Step 3: Forward past obstacle ────────────────────────────────────
     Serial.println(F("[AVOID] 3. Forward past obstacle"));
     motors_driveStraight(spd);
     delay(P.forwardAvoidTime);
     motors_stop(); delay(150);
 
-    // ── Step 4: Return 90 deg pivot (opposite direction) ─────────────────
     if (goRight) {
         Serial.println(F("[AVOID] 4. Pivot LEFT 90 deg"));
         unsigned long t = millis();
@@ -237,13 +316,11 @@ void robot_executeRedAvoid() {
     }
     motors_stop(); delay(150);
 
-    // ── Step 5: Forward to re-cross line ─────────────────────────────────
     Serial.println(F("[AVOID] 5. Forward to re-cross line"));
     motors_driveStraight(spd);
     delay(P.forwardAvoidTime);
     motors_stop(); delay(150);
 
-    // ── Step 6: Final pivot to find line ─────────────────────────────────
     if (goRight) {
         Serial.println(F("[AVOID] 6. Pivot RIGHT - find line"));
         unsigned long t = millis();
