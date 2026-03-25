@@ -1,0 +1,96 @@
+{
+    // VS Code Tasks for EC6090 SmartLineFollowerRobot
+    // PlatformIO local tasks - no remote agent needed.
+    //
+    // Usage: Terminal -> Run Task  OR  Ctrl+Shift+B for default build
+    // Monitor shortcut: Terminal -> Run Task -> Monitor (115200)
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // DEFAULT build task  (Ctrl+Shift+B)
+            "label": "PIO: Build",
+            "type": "shell",
+            "command": "platformio run --environment esp32dev",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            // Upload firmware only
+            "label": "PIO: Upload",
+            "type": "shell",
+            "command": "platformio run --target upload --environment esp32dev",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            // LOCAL Serial Monitor at 115200 baud
+            // This is the fix - uses 'device monitor' not 'remote device monitor'
+            "label": "PIO: Monitor (115200)",
+            "type": "shell",
+            "command": "platformio device monitor --baud 115200 --environment esp32dev",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            // Upload firmware then immediately open monitor
+            "label": "PIO: Upload + Monitor",
+            "type": "shell",
+            "command": "platformio run --target upload --environment esp32dev && platformio device monitor --baud 115200 --environment esp32dev",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            // Flash empty LittleFS partition  (run once after adding board_build.filesystem)
+            // WARNING: wipes /pidlog.csv on the device
+            "label": "PIO: Upload Filesystem (LittleFS)",
+            "type": "shell",
+            "command": "platformio run --target uploadfs --environment esp32dev",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            // Clean build artifacts
+            "label": "PIO: Clean",
+            "type": "shell",
+            "command": "platformio run --target clean --environment esp32dev",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
