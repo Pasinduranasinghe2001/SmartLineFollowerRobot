@@ -47,25 +47,45 @@
 #define DBG_DISABLE_RECOVERY   0   // 1 = replace recovery with motors_stop()
 #define DBG_DISABLE_SPEEDDROP  0   // 1 = dynBase = baseSpeed always (flat speed)
 
+// ── Serial verbose PID log ────────────────────────────────────────────────
+//  DBG_VERBOSE=1  -> prints HUMAN + CSV to Serial every DBG_VERBOSE_INTERVAL ms
+//  Set to 0 before competition (zero overhead when disabled)
 #define DBG_VERBOSE            1   // <<< PID DEBUG ENABLED - set to 0 to silence
 #define DBG_VERBOSE_INTERVAL   200 // ms between verbose prints
+
+// ── Offline file logger (LittleFS) ───────────────────────────────────────
+//  DBG_LOG_TO_FILE=1  -> appends CSV row to /pidlog.csv on LittleFS
+//                        every DBG_VERBOSE_INTERVAL ms.
+//                        Works WITHOUT a Serial / USB connection.
+//  DBG_LOG_TO_FILE=0  -> file logging disabled, no LittleFS overhead.
+//
+//  Workflow:
+//    1. Set DBG_LOG_TO_FILE=1, flash, run the robot on the track.
+//    2. Bring robot back, plug USB.
+//    3. Open Serial Monitor and type:  DUMPLOG   <- streams entire CSV
+//    4. Copy-paste CSV into Excel / plot tool for graphs.
+//    5. Type:  CLEARLOG  <- wipes file, ready for next run.
+//
+//  File:     /pidlog.csv  (LittleFS, 1.5 MB partition)
+//  Capacity: ~50,000 rows per MB  (~75,000 rows total at default 200ms interval)
+//            At 200ms interval a 5-minute run = 1500 rows  (tiny)
+//            Reduce DBG_VERBOSE_INTERVAL to 20ms for high-resolution capture
+//
+//  WARNING: Set DBG_LOG_TO_FILE=0 for competition - flash writes have
+//           ~0.5ms latency and will slightly perturb the PID loop.
+#define DBG_LOG_TO_FILE        1   // <<< FILE LOGGING ENABLED - set to 0 to disable
 
 // =========================================================================
 //  MQTT / Wi-Fi CONFIGURATION
 //  -------------------------------------------------------------------------
-//  DBG_DISABLE_MQTT = 0  ->  Wi-Fi + MQTT enabled
 //  DBG_DISABLE_MQTT = 1  ->  Wi-Fi completely skipped, robot runs offline
-//                            mqtt_init() and mqtt_loop() become empty stubs.
-//                            Zero overhead - safe for competition.
-//
-//  To re-enable: set DBG_DISABLE_MQTT back to 0 and fill in credentials.
 // =========================================================================
 
 #define DBG_DISABLE_MQTT       1          // MQTT DISABLED - set to 0 to re-enable
 
 #define MQTT_WIFI_SSID         "YOUR_SSID"
 #define MQTT_WIFI_PASS         "YOUR_PASSWORD"
-#define MQTT_BROKER            "192.168.1.100"  // broker IP on your LAN
+#define MQTT_BROKER            "192.168.1.100"
 #define MQTT_PORT              1883
 #define MQTT_CLIENT_ID         "ESP32Robot"
 
@@ -79,48 +99,37 @@
 //  PIN ASSIGNMENTS
 // =========================================================================
 
-// IR Sensors (input-only digital GPIOs, MD0370)
-//  S0=far-left ... S6=far-right
 extern const int IR_PIN[7];          // { 32, 33, 34, 35, 27, 36, 39 }
 
-// Right Motor (L298N channel A)
-extern const int PIN_ENA;            //  5  - PWM via LEDC channel 0
+extern const int PIN_ENA;            //  5
 extern const int PIN_IN1;            // 18
 extern const int PIN_IN2;            // 19
 
-// Left Motor (L298N channel B)
-extern const int PIN_ENB;            // 23  - PWM via LEDC channel 1
+extern const int PIN_ENB;            // 23
 extern const int PIN_IN3;            // 21
 extern const int PIN_IN4;            // 22
 
-// Servo (single servo drop-gate / gripper)
 extern const int PIN_SERVO;          // 13
 
-// HC-SR04 Ultrasonic
-//  ECHO outputs 5V - use 1kOhm / 2kOhm voltage divider -> 3.3V
 extern const int PIN_TRIG;           // 17
 extern const int PIN_ECHO;           // 16
 
-// TCS3200 Color Sensor
 extern const int PIN_CS_S0;          // 14
 extern const int PIN_CS_S1;          // 15
 extern const int PIN_CS_S2;          // 26
 extern const int PIN_CS_S3;          // 25
 extern const int PIN_CS_OUT;         //  2
 
-// LEDC (ESP32 hardware PWM)
-#define LEDC_FREQ           20000    // 20 kHz carrier
-#define LEDC_RESOLUTION         8   // 8-bit duty 0-255
-#define LEDC_CH_ENA             0   // channel 0 -> right motor ENA
-#define LEDC_CH_ENB             1   // channel 1 -> left  motor ENB
+#define LEDC_FREQ           20000
+#define LEDC_RESOLUTION         8
+#define LEDC_CH_ENA             0
+#define LEDC_CH_ENB             1
 
-// EEPROM
 #define EEPROM_SIZE          512
 #define EEPROM_MAGIC        0xAE
 #define EEPROM_ADDR_MAGIC      0
 #define EEPROM_ADDR_CAL        1
 #define EEPROM_ADDR_PARAMS   100
 
-// Physical motor inversion
 #define PHYS_RIGHT_INVERT  false
 #define PHYS_LEFT_INVERT   false
