@@ -16,6 +16,11 @@
 //
 //  Serial commands (115200 baud):
 //    CALIBRATE | STATUS | SAVE | LOAD | SET KEY VALUE
+//
+//  DEBUG: set flags in include/config.h to disable subsystems for testing
+//    DBG_DISABLE_OBSTACLE  DBG_DISABLE_COLOR   DBG_DISABLE_SERVO
+//    DBG_DISABLE_ENDZONE   DBG_DISABLE_RECOVERY  DBG_DISABLE_SPEEDDROP
+//    DBG_VERBOSE
 // =========================================================================
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -29,45 +34,86 @@
 #include "servo_gate.h"
 #include "robot.h"
 
-static bool cubeOnBoard = false;   // true after green pick, until end-zone drop
+static bool cubeOnBoard = false;
 
-// ── BUG-03 FIX: end-zone debounce ────────────────────────────────────────
-//  PROBLEM (before fix):
-//    The end-zone drop triggered the instant sensors_allDark() was true
-//    while cubeOnBoard was set.  A tape gap, sensor lift-off on a bump,
-//    or a T-junction during recovery all produce a momentary allDark()
-//    reading that would falsely fire the drop sequence mid-track.
-//
-//  FIX:
-//    Introduce a static timestamp `_darkSince`.  The drop only fires when
-//    allDark() has been CONTINUOUSLY true for at least END_ZONE_DARK_MS.
-//    The moment any IR sensor sees the line again the timer resets to 0,
-//    so a brief gap never accumulates enough time to trigger the drop.
-//
-//  Tuning:
-//    500 ms was chosen because:
-//      • At baseSpeed=110, 500 ms ≈ 5–6 cm of travel – enough to confirm
-//        the robot has genuinely passed the end of the track.
-//      • Normal tape gaps on competition tracks are < 100 ms at this speed.
-//    Adjust END_ZONE_DARK_MS via Serial: SET ENDZONE 400  (not yet a Param
-//    field – hardcoded constant is sufficient for this project scope).
-// ──────────────────────────────────────────────────────────────────────────
-static const unsigned long END_ZONE_DARK_MS = 500UL;  // ms all-dark must persist
-static unsigned long _darkSince = 0;                  // 0 = not currently dark
+// ── BUG-03 end-zone debounce ───────────────────────────────────────────────────────
+static const unsigned long END_ZONE_DARK_MS = 500UL;
+static unsigned long _darkSince = 0;
 
-// ─────────────────────────────────────────────────────────────────────────
+// ── DBG_VERBOSE timing ────────────────────────────────────────────────────────────
+static unsigned long _lastVerboseMs = 0;
+
+// =========================================================================
+//  DEBUG BANNER  –  printed once at boot so you know which flags are active
+// =========================================================================
+static void _printDebugBanner() {
+#if DBG_DISABLE_OBSTACLE || DBG_DISABLE_COLOR  || DBG_DISABLE_SERVO  || \
+    DBG_DISABLE_ENDZONE  || DBG_DISABLE_RECOVERY || DBG_DISABLE_SPEEDDROP || \
+    DBG_VERBOSE
+    Serial.println(F("\n┌────────────────────────────────────────┐"));
+    Serial.println(F(  "│   DEBUG MODE – NOT FOR COMPETITION!     │"));
+    Serial.println(F(  "└────────────────────────────────────────┘"));
+#if DBG_DISABLE_OBSTACLE
+    Serial.println(F("  [DBG] OBSTACLE detection  : DISABLED"));
+#endif
+#if DBG_DISABLE_COLOR
+    Serial.println(F("  [DBG] COLOUR detection    : DISABLED"));
+#endif
+#if DBG_DISABLE_SERVO
+    Serial.println(F("  [DBG] SERVO gate          : DISABLED"));
+#endif
+#if DBG_DISABLE_ENDZONE
+    Serial.println(F("  [DBG] END-ZONE drop       : DISABLED"));
+#endif
+#if DBG_DISABLE_RECOVERY
+    Serial.println(F("  [DBG] LOST-LINE recovery  : DISABLED (motors stop on dark)"));
+#endif
+#if DBG_DISABLE_SPEEDDROP
+    Serial.println(F("  [DBG] SPEED-DROP penalty  : DISABLED (flat baseSpeed always)"));
+#endif
+#if DBG_VERBOSE
+    Serial.printf (  "  [DBG] VERBOSE output      : ON every %d ms\n",
+                     DBG_VERBOSE_INTERVAL);
+#endif
+    Serial.println();
+#endif
+}
+
+// =========================================================================
+//  DBG_VERBOSE: print sensors + PID + distance once per interval
+// =========================================================================
+#if DBG_VERBOSE
+static void _verbosePrint() {
+    unsigned long now = millis();
+    if (now - _lastVerboseMs < DBG_VERBOSE_INTERVAL) return;
+    _lastVerboseMs = now;
+
+    // Raw IR bits
+    extern bool sensors_getS(int i);  // defined in sensors.cpp
+    Serial.printf("[V] IR=%d%d%d%d%d  dist=%.1f  state=%d  recov=%d\n",
+        sensors_getS(0) ? 1 : 0,
+        sensors_getS(1) ? 1 : 0,
+        sensors_getS(2) ? 1 : 0,
+        sensors_getS(3) ? 1 : 0,
+        sensors_getS(4) ? 1 : 0,
+        ultrasonic_getCached(),
+        (int)robotState,
+        robot_recoveryIdle() ? 0 : 1);
+}
+#endif
+
+// =========================================================================
+//  setup()
+// =========================================================================
 void setup() {
     Serial.begin(115200);
-    Serial.println(F("\n[BOOT] EC6090 Mini-Project \u2013 ESP32 Robot"));
+    Serial.println(F("\n[BOOT] EC6090 Mini-Project – ESP32 Robot"));
 
     EEPROM.begin(EEPROM_SIZE);
-
     params_init();
 
-    // BUG-10 FIX: load EEPROM BEFORE servo_init() so saved servo angles
-    // are applied on the first write inside servo_init().
     if (!params_loadEEPROM()) {
-        Serial.println(F("[BOOT] No EEPROM data \u2013 using factory defaults."));
+        Serial.println(F("[BOOT] No EEPROM data – using factory defaults."));
         Serial.println(F("[BOOT] Send: CALIBRATE  then  SAVE"));
     } else {
         Serial.println(F("[BOOT] EEPROM loaded OK."));
@@ -78,67 +124,100 @@ void setup() {
     sensors_init();
     ultrasonic_init();
     color_init();
-    servo_init();       // uses LEDC timers 2 & 3  (motors use 0 & 1)
-                        // reads P.servoHomeAngle – correct because EEPROM already loaded
+    servo_init();
+
+    _printDebugBanner();   // ← prints active debug flags after all inits
 
     robotState   = ST_LINE_FOLLOW;
     cubeOnBoard  = false;
-    _darkSince   = 0;              // BUG-03: initialise debounce timer
+    _darkSince   = 0;
     lastSeenSide = SIDE_UNKNOWN;
     robot_resetRecovery();
-    servo_close();      // confirm gate closed at boot
+
+#if DBG_DISABLE_SERVO
+    Serial.println(F("[DBG] Servo disabled – skipping servo_close() at boot."));
+#else
+    servo_close();
+#endif
 
     Serial.println(F("[BOOT] Starting in 2 s..."));
     delay(2000);
     Serial.println(F("[BOOT] Running."));
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// =========================================================================
+//  loop()
+// =========================================================================
 void loop() {
     params_handleSerial();
 
+#if DBG_VERBOSE
+    sensors_read();        // ensure fresh data for verbose print
+    _verbosePrint();
+#endif
+
     switch (robotState) {
 
-        // ── Normal PID line following ─────────────────────────────────────
+        // ── Normal PID line following ─────────────────────────────────────────────
         case ST_LINE_FOLLOW: {
-            float dist = ultrasonic_getCached();
 
+#if DBG_DISABLE_OBSTACLE
+            // Obstacle gating completely skipped — run pure PID only
+#else
+            float dist = ultrasonic_getCached();
             if (dist < P.obstacleSlowDist) {
-                Serial.printf("[STATE] Obstacle %.1f cm \u2192 OBSTACLE_SLOW\n", dist);
+                Serial.printf("[STATE] Obstacle %.1f cm → OBSTACLE_SLOW\n", dist);
                 robotState = ST_OBSTACLE_SLOW;
                 break;
             }
+#endif
 
             sensors_read();
             if (!sensors_allDark()) {
                 sensors_updateLastSeenSide();
                 if (robot_recoveryIdle() || sensors_isPathFoundPattern())
                     robot_followLine();
-                else
+                else {
+#if DBG_DISABLE_RECOVERY
+                    motors_stop();
+                    Serial.println(F("[DBG] allDark in follow – recovery disabled, motors stopped."));
+#else
                     robot_runLostLineRecovery();
+#endif
+                }
             } else {
+#if DBG_DISABLE_RECOVERY
+                motors_stop();
+                Serial.println(F("[DBG] allDark – recovery disabled, motors stopped."));
+#else
                 robot_runLostLineRecovery();
+#endif
             }
             break;
         }
 
-        // ── Slowing and approaching obstacle for colour read ──────────────
+        // ── Slowing and approaching obstacle for colour read ──────────────────
         case ST_OBSTACLE_SLOW: {
             float dist = ultrasonic_getCached();
 
             if (dist > P.obstacleSlowDist + 3.0f) {
-                Serial.println(F("[STATE] Clear \u2192 LINE_FOLLOW"));
+                Serial.println(F("[STATE] Clear → LINE_FOLLOW"));
                 robotState = ST_LINE_FOLLOW;
                 break;
             }
             if (dist <= P.colorCheckDist) {
                 motors_stop();
-                Serial.printf("[STATE] dist %.1f cm \u2192 COLOR_DETECT\n", dist);
+                Serial.printf("[STATE] dist %.1f cm → COLOR_DETECT\n", dist);
+
+#if DBG_DISABLE_COLOR
+                Serial.println(F("[DBG] Colour detect disabled → returning to LINE_FOLLOW."));
+                robotState = ST_LINE_FOLLOW;
+#else
                 robotState = ST_COLOR_DETECT;
+#endif
                 break;
             }
 
-            // Still closing: follow line at reduced base speed
             sensors_read();
             int savedBase = P.baseSpeed;
             P.baseSpeed   = P.approachSpeed;
@@ -152,79 +231,78 @@ void loop() {
             break;
         }
 
-        // ── Stopped: read colour ──────────────────────────────────────────
+        // ── Stopped: read colour ────────────────────────────────────────────────
         case ST_COLOR_DETECT: {
             motors_stop();
             delay(200);
-            ColorResult col = color_detect();
 
-            if      (col == COLOR_RED)   { Serial.println(F("[STATE] RED \u2192 AVOID"));      robotState = ST_RED_AVOID;   }
-            else if (col == COLOR_GREEN) { Serial.println(F("[STATE] GREEN \u2192 PICK"));     robotState = ST_GREEN_PICK;  }
-            else                         { Serial.println(F("[STATE] Unknown \u2192 FOLLOW")); robotState = ST_LINE_FOLLOW; }
+#if DBG_DISABLE_COLOR
+            // Should not reach here when DBG_DISABLE_COLOR=1 because
+            // ST_OBSTACLE_SLOW already redirects, but guard anyway.
+            Serial.println(F("[DBG] ST_COLOR_DETECT reached with colour disabled → LINE_FOLLOW."));
+            robotState = ST_LINE_FOLLOW;
+#else
+            ColorResult col = color_detect();
+            if      (col == COLOR_RED)   { Serial.println(F("[STATE] RED → AVOID"));      robotState = ST_RED_AVOID;   }
+            else if (col == COLOR_GREEN) { Serial.println(F("[STATE] GREEN → PICK"));     robotState = ST_GREEN_PICK;  }
+            else                         { Serial.println(F("[STATE] Unknown → FOLLOW")); robotState = ST_LINE_FOLLOW; }
+#endif
             break;
         }
 
-        // ── Bypass red cube (blocking U-shape maneuver) ───────────────────
+        // ── Bypass red cube ──────────────────────────────────────────────────────
         case ST_RED_AVOID:
             robot_executeRedAvoid();
             robotState = ST_LINE_FOLLOW;
             break;
 
-        // ── Pick green cube (gate closes, robot carries to end zone) ──────
-        // BUG-02 FIX: servo_close() removed from here; it lives exclusively
-        // inside robot_executeGreenPick() to avoid double-write servo jerk.
+        // ── Pick green cube ──────────────────────────────────────────────────────
         case ST_GREEN_PICK:
-            robot_executeGreenPick();          // servo_close() is inside here
+            robot_executeGreenPick();
             cubeOnBoard = true;
-            _darkSince  = 0;                   // BUG-03: reset debounce on pick
-            Serial.println(F("[STATE] Cube secured \u2192 continue to end zone"));
+            _darkSince  = 0;
+            Serial.println(F("[STATE] Cube secured → continue to end zone"));
             robotState = ST_LINE_FOLLOW;
             break;
     }
 
-    // ── End-zone drop  (BUG-03 FIXED: debounced) ─────────────────────────
-    //
-    //  Condition to DROP:
-    //    1. cubeOnBoard         – we actually picked a green cube
-    //    2. sensors_allDark()   – all 5 IR sensors see no line
-    //    3. dist >= slowDist    – no obstacle directly ahead (open space)
-    //    4. CONTINUOUSLY dark   – allDark() has been true for ≥500 ms
-    //
-    //  Condition to RESET timer:
-    //    Any IR sensor sees the line again (¬allDark) – we’re still on track.
-    //
+    // ── End-zone drop (debounced) ────────────────────────────────────────────────
+#if DBG_DISABLE_ENDZONE
+    // End-zone drop skipped entirely — robot follows forever
+#else
     if (cubeOnBoard) {
         bool allDarkNow = sensors_allDark();
         bool clearAhead = (ultrasonic_getCached() >= P.obstacleSlowDist);
 
         if (allDarkNow && clearAhead) {
             if (_darkSince == 0) {
-                // First loop iteration where condition is true – start timer
                 _darkSince = millis();
                 Serial.println(F("[DROP] All-dark started – debouncing..."));
             } else if (millis() - _darkSince >= END_ZONE_DARK_MS) {
-                // Dark has persisted long enough – genuine end zone reached
-                Serial.printf("[DROP] End zone confirmed (%lu ms dark) \u2192 opening gate\n",
+                Serial.printf("[DROP] End zone confirmed (%lu ms dark) → opening gate\n",
                               millis() - _darkSince);
                 motors_stop();
                 delay(300);
+#if DBG_DISABLE_SERVO
+                Serial.println(F("[DBG] Servo disabled – skipping gate open/close."));
+#else
                 servo_open();
                 delay(1200);
                 servo_close();
+#endif
                 cubeOnBoard = false;
                 _darkSince  = 0;
                 Serial.println(F("[DROP] Done. Robot halted."));
                 while (true) delay(100);
             }
-            // else: still accumulating dark time – do nothing this loop tick
         } else {
-            // Line visible again or obstacle ahead – reset debounce timer
             if (_darkSince != 0) {
                 Serial.println(F("[DROP] Dark interrupted – debounce reset."));
                 _darkSince = 0;
             }
         }
     }
+#endif
 
     delay(5);
 }
