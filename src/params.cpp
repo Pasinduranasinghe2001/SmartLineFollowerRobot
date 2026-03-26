@@ -17,7 +17,7 @@ Params P = {
     130,    // recoverSpeed
     140,    // searchSpeed
     150,    // reverseSpeed
-    20,     // reverseBiasDelta
+    25,     // reverseBiasDelta
     100,    // forwardRecoverSpeed
     90,    // minSpeed
 
@@ -26,7 +26,7 @@ Params P = {
     100UL,  // forwardRecoverTime (ms)
 
     30.0f,  // kp
-    10.0f,   // kd
+    9.0f,   // kd
     0.1f,  // posFilter
     6.0f,   // widthKp
     1.8f,   // speedDrop
