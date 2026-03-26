@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../../../dev-env/Robotics/SmartLineFollowerRobot"
+		},
+		{
+			"name": "LineFollower",
+			"path": ".."
+		}
+	],
+	"settings": {}
+}
