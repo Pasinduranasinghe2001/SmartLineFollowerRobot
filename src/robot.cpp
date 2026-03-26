@@ -1,10 +1,21 @@
 // =========================================================================
 //  robot.cpp  -  PID line follow + lost-line recovery + obstacle + pick
 //
-//  Physic 3 - Curvature-Adaptive Speed
-//  Physic 4 - Obstacle Side Memory
-//  Debug    - PidDebugSnapshot written every followLine() call
-//             robot_debugLog() prints HUMAN + CSV + writes LittleFS row
+//  DUAL-ZONE SENSOR STRATEGY (feature/dual-zone-sensor-strategy)
+//  ---------------------------------------------------------------
+//  DETECT zone (inner S2/S3/S4): computes PD error in range ±2
+//  HOLD zone   (outer S0/S6)   : triggers speed state transitions
+//
+//  Speed State Machine:
+//    FAST  (fastSpeed=165)   : no outer sensor, |innerErr|<0.5 -> straight
+//    CURVE (turnSpeed=128)   : one outer sensor active
+//    SHARP (sharpSpeed=105)  : both outer sensors active
+//
+//  Kp=90.0, Kd=25.0 scaled for inner ±2 error range (was ±6)
+//
+//  Physic 3 (curveAboveCount) kept as secondary fallback.
+//  Physic 4 - Obstacle Side Memory unchanged.
+//  Debug    - PidDebugSnapshot written every followLine() call.
 // =========================================================================
 #include <Arduino.h>
 #include "robot.h"
@@ -23,15 +34,20 @@ RobotState robotState = ST_LINE_FOLLOW;
 PidDebugSnapshot pidSnap;
 
 // PID state
-static float pidPos      = 0.0f;
-static float filteredPos = 0.0f;
+static float pidPos      = 0.0f;   // full 7-sensor position (for debug)
+static float innerPos    = 0.0f;   // inner-zone position (for PD)
+static float filteredPos = 0.0f;   // filtered inner position
 static float lastError   = 0.0f;
 
-// Physic 3
+// Physic 3 (secondary fallback)
 static int  _curveAboveCount = 0;
 static int  _curveBelowCount = 0;
 static bool _inCurveMode     = false;
 static const int CURVE_EXIT_LOOPS = 5;
+
+// Dual-zone speed states
+enum ZoneSpeedState { ZSS_FAST, ZSS_CURVE, ZSS_SHARP };
+static ZoneSpeedState _zoneState = ZSS_FAST;
 
 // Recovery
 enum RecoveryMode {
@@ -55,41 +71,78 @@ void robot_resetRecovery() {
 }
 
 // =========================================================================
-//  PID LINE FOLLOWING  +  Physic 3  +  Debug Snapshot
+//  PID LINE FOLLOWING  -  Dual-Zone Speed State Machine
 // =========================================================================
 void robot_followLine() {
-    pidPos      = sensors_computePosition();
-    filteredPos = P.posFilter * filteredPos + (1.0f - P.posFilter) * pidPos;
+    // --- Read both zone positions ---
+    pidPos   = sensors_computePosition();       // full 7-sensor (for debug)
+    innerPos = sensors_computeInnerPosition();  // inner S2/S3/S4 (for PD)
+
+    // Low-pass filter applied to inner position
+    filteredPos = P.posFilter * filteredPos + (1.0f - P.posFilter) * innerPos;
 
     float error      = filteredPos;
     float derivative = error - lastError;
+
+    // PD gains are scaled for ±2 inner error range
+    // Effective Kp=90, Kd=25 (set in params via kp/kd fields)
     float correction = P.kp * error + P.kd * derivative;
     lastError = error;
 
-    // Physic 3
-    if (fabsf(error) > P.curveDetectThresh) {
-        _curveAboveCount++;
-        _curveBelowCount = 0;
-        if (_curveAboveCount >= P.curveConfirmLoops && !_inCurveMode) {
+    // --- DUAL-ZONE speed state machine ---
+    bool outerL = sensors_outerLeft();
+    bool outerR = sensors_outerRight();
+
+    int effectiveBase;
+    if (outerL && outerR) {
+        // Both outer sensors active -> extremely sharp curve
+        _zoneState    = ZSS_SHARP;
+        effectiveBase = P.sharpSpeed;
+        if (!_inCurveMode) {
             _inCurveMode = true;
-            Serial.printf("[CURVE] Entered curve mode (|err|=%.2f thresh=%.2f)\n",
-                          fabsf(error), P.curveDetectThresh);
+            Serial.println(F("[ZONE] SHARP: both outer sensors active"));
+        }
+    } else if (outerL || outerR) {
+        // One outer sensor active -> curve
+        _zoneState    = ZSS_CURVE;
+        effectiveBase = P.turnSpeed;
+        if (!_inCurveMode) {
+            _inCurveMode = true;
+            Serial.printf("[ZONE] CURVE: outer %s sensor active\n",
+                          outerL ? "LEFT" : "RIGHT");
         }
     } else {
-        _curveAboveCount = 0;
+        // No outer sensors -> straight / gentle
         if (_inCurveMode) {
             _curveBelowCount++;
             if (_curveBelowCount >= CURVE_EXIT_LOOPS) {
                 _inCurveMode     = false;
                 _curveBelowCount = 0;
-                Serial.println(F("[CURVE] Exited curve mode"));
+                Serial.println(F("[ZONE] FAST: outer sensors clear -> boosting speed"));
             }
+            effectiveBase = P.turnSpeed;  // brief hold before boost
+        } else {
+            _zoneState    = ZSS_FAST;
+            effectiveBase = P.fastSpeed;
         }
     }
 
-    int effectiveBase = _inCurveMode ? P.curveSlowSpeed : P.baseSpeed;
-    int dynBase       = effectiveBase - (int)(fabsf(error) * P.speedDrop);
-    dynBase           = constrain(dynBase, P.minSpeed, effectiveBase);
+    // --- Physic 3 fallback (curveAboveCount on full error) ---
+    // Used as secondary guard if outer sensors miss a gradual curve
+    if (fabsf(pidPos) > P.curveDetectThresh) {
+        _curveAboveCount++;
+        if (_curveAboveCount >= P.curveConfirmLoops && effectiveBase > P.turnSpeed) {
+            effectiveBase = P.turnSpeed;
+            Serial.printf("[P3] Physic3 fallback: |fullErr|=%.2f > thresh=%.2f\n",
+                          fabsf(pidPos), P.curveDetectThresh);
+        }
+    } else {
+        _curveAboveCount = 0;
+    }
+
+    // --- Dynamic base: reduce speed proportionally with inner error ---
+    int dynBase = effectiveBase - (int)(fabsf(error) * P.speedDrop);
+    dynBase     = constrain(dynBase, P.minSpeed, effectiveBase);
 
     int leftSpd  = constrain(dynBase + (int)correction, P.minSpeed, 255);
     int rightSpd = constrain(dynBase - (int)correction, P.minSpeed, 255);
@@ -97,9 +150,9 @@ void robot_followLine() {
     motors_setLeft(leftSpd,   true);
     motors_setRight(rightSpd, true);
 
-    // Write snapshot (always cheap)
-    pidSnap.rawPos        = pidPos;
-    pidSnap.filteredPos   = filteredPos;
+    // --- Write debug snapshot ---
+    pidSnap.rawPos        = pidPos;          // full 7-sensor for debug visibility
+    pidSnap.filteredPos   = filteredPos;     // filtered inner pos
     pidSnap.error         = error;
     pidSnap.derivative    = derivative;
     pidSnap.correction    = correction;
@@ -114,15 +167,12 @@ void robot_followLine() {
 
 // =========================================================================
 //  DEBUG LOG
-//  Called from main.cpp every DBG_VERBOSE_INTERVAL ms.
-//  - Prints HUMAN block + HINT block + CSV line to Serial (if DBG_VERBOSE)
-//  - Appends CSV row to LittleFS /pidlog.csv (if DBG_LOG_TO_FILE)
 // =========================================================================
 void robot_debugLog() {
 #if DBG_VERBOSE
     static bool _headerPrinted = false;
     if (!_headerPrinted) {
-        Serial.println(F("\n[DBG] PID verbose log enabled"));
+        Serial.println(F("\n[DBG] PID verbose log enabled - DUAL-ZONE mode"));
         Serial.println(F("[DBG] CSV columns:"));
         Serial.println(F("t_ms,rawPos,filtPos,error,derivative,correction,"
                          "dynBase,effectiveBase,leftSpd,rightSpd,curveMode,"
@@ -130,39 +180,45 @@ void robot_debugLog() {
         _headerPrinted = true;
     }
 
-    // Sensor bitmap
+    // Sensor bitmap with zone markers
     Serial.print(F("[IR]  "));
-    for (int i = 0; i < IR_SENSOR_COUNT; i++)
+    for (int i = 0; i < IR_SENSOR_COUNT; i++) {
+        if (i == 1 || i == 5) Serial.print('|');  // zone boundaries
         Serial.print(irOn[i] ? 'X' : '.');
-    Serial.printf("  raw=%+.2f  filt=%+.2f  side=%s\n",
+    }
+    Serial.printf("  full=%+.2f  inner=%+.2f  side=%s  hold=%s%s\n",
                   pidSnap.rawPos, pidSnap.filteredPos,
                   lastSeenSide == SIDE_LEFT   ? "L" :
                   lastSeenSide == SIDE_RIGHT  ? "R" :
-                  lastSeenSide == SIDE_CENTER ? "C" : "?");
+                  lastSeenSide == SIDE_CENTER ? "C" : "?",
+                  irOn[0] ? "L" : ".",
+                  irOn[6] ? "R" : ".");
+
+    // Zone state
+    const char* zoneStr = (_zoneState == ZSS_SHARP) ? "SHARP" :
+                          (_zoneState == ZSS_CURVE)  ? "CURVE" : "FAST ";
+    Serial.printf("[ZONE] %s  base=%d  dyn=%d  L=%d  R=%d\n",
+                  zoneStr,
+                  pidSnap.effectiveBase, pidSnap.dynBase,
+                  pidSnap.leftSpd, pidSnap.rightSpd);
 
     // PID internals
     Serial.printf("[PID] err=%+.2f  deriv=%+.2f  corr=%+.1f\n",
                   pidSnap.error, pidSnap.derivative, pidSnap.correction);
-    Serial.printf("      dyn=%d  base=%d(%s)  L=%d  R=%d  CURVE=%s(%d)\n",
-                  pidSnap.dynBase, pidSnap.effectiveBase,
-                  pidSnap.inCurveMode ? "SLOW" : "NORM",
-                  pidSnap.leftSpd, pidSnap.rightSpd,
-                  pidSnap.inCurveMode ? "ON " : "OFF",
-                  pidSnap.curveAbove);
     Serial.printf("      dist=%.1fcm  t=%lums\n",
                   pidSnap.dist, pidSnap.loopMs);
 
     // Auto tuning hints
     if (fabsf(pidSnap.correction) > 0.8f * pidSnap.effectiveBase)
-        Serial.println(F("[HINT] correction > 80% of base -> KP may be too high"));
-    if (pidSnap.dynBase <= P.minSpeed && fabsf(pidSnap.error) < 1.0f)
-        Serial.println(F("[HINT] dynBase clamped to minSpeed on low error -> raise minSpeed or lower speedDrop"));
-    if (pidSnap.inCurveMode && pidSnap.curveAbove > 20)
-        Serial.println(F("[HINT] CURVE mode held >20 loops -> curveDetectThresh may be too low"));
+        Serial.println(F("[HINT] correction > 80% base -> Kp may be too high"));
+    if (pidSnap.dynBase <= P.minSpeed && fabsf(pidSnap.error) < 0.3f)
+        Serial.println(F("[HINT] dynBase at floor on low error -> raise minSpeed or lower speedDrop"));
+    if (_zoneState == ZSS_FAST && fabsf(pidSnap.error) > 1.0f)
+        Serial.println(F("[HINT] FAST mode but inner error>1 -> outer sensor threshold may be too high"));
     if (fabsf(pidSnap.derivative) > fabsf(pidSnap.error) * 2.0f)
-        Serial.println(F("[HINT] derivative >> error -> sensor noise or KD too high"));
+        Serial.println(F("[HINT] derivative >> error -> sensor noise or Kd too high"));
 
-    // CSV line to Serial
+    // CSV line
     Serial.printf("%lu,%.2f,%.2f,%.2f,%.2f,%.1f,%d,%d,%d,%d,%d,%d,%.1f\n",
                   pidSnap.loopMs, pidSnap.rawPos, pidSnap.filteredPos,
                   pidSnap.error, pidSnap.derivative, pidSnap.correction,
@@ -171,7 +227,6 @@ void robot_debugLog() {
                   (int)pidSnap.inCurveMode, pidSnap.curveAbove, pidSnap.dist);
 #endif
 
-    // File log (independent of DBG_VERBOSE - works even if verbose is off)
 #if DBG_LOG_TO_FILE
     logger_appendRow(pidSnap);
 #endif
@@ -179,6 +234,7 @@ void robot_debugLog() {
 
 // =========================================================================
 //  LOST-LINE RECOVERY
+//  Directional search guided by lastSeenSide (outer sensor memory)
 // =========================================================================
 static void _reverseStage() {
     int fastRev = constrain(P.reverseSpeed + P.reverseBiasDelta, 0, 255);
@@ -199,6 +255,7 @@ static void _forwardStage() {
     if (sensors_isRightTurnPattern()) { recMode = REC_TURN_RIGHT; recStartMs = millis(); return; }
     if (sensors_isPathFoundPattern()) { robot_resetRecovery(); return; }
     if (millis() - recStartMs > P.forwardRecoverTime) {
+        // Guided by outer-sensor last-seen side (more reliable than pure encoder)
         if      (lastSeenSide == SIDE_LEFT)  recMode = REC_TURN_LEFT;
         else if (lastSeenSide == SIDE_RIGHT) recMode = REC_TURN_RIGHT;
         else                                 robot_resetRecovery();
@@ -209,21 +266,28 @@ static void _forwardStage() {
 static void _turnLeftStage() {
     motors_pivotLeft(P.searchSpeed);
     sensors_read();
-    if (sensors_isPathFoundPattern()) { robot_resetRecovery(); return; }
-    if (sensors_isLeftTurnPattern())  return;
+    // Outer sensor on correct side is the earliest line-found signal
+    if (sensors_outerRight() || sensors_isPathFoundPattern()) {
+        robot_resetRecovery(); return;
+    }
+    if (sensors_isLeftTurnPattern()) return;
     if (millis() - recStartMs > P.timeoutLeft) { recMode = REC_REVERSE; recStartMs = millis(); }
 }
 
 static void _turnRightStage() {
     motors_pivotRight(P.searchSpeed);
     sensors_read();
-    if (sensors_isPathFoundPattern()) { robot_resetRecovery(); return; }
+    // Outer sensor on correct side is the earliest line-found signal
+    if (sensors_outerLeft() || sensors_isPathFoundPattern()) {
+        robot_resetRecovery(); return;
+    }
     if (sensors_isRightTurnPattern()) return;
     if (millis() - recStartMs > P.timeoutRight) { recMode = REC_REVERSE; recStartMs = millis(); }
 }
 
 void robot_runLostLineRecovery() {
     sensors_read();
+    sensors_updateLastSeenSide();  // keep outer-sensor memory fresh during recovery
     if (recMode == REC_IDLE) { recMode = REC_REVERSE; recStartMs = millis(); }
     switch (recMode) {
         case REC_REVERSE:       _reverseStage();   break;
@@ -282,7 +346,7 @@ void robot_executeRedAvoid() {
         unsigned long t = millis();
         while (millis() - t < P.timeoutRight) {
             motors_pivotRight(P.searchSpeed); sensors_read();
-            if (sensors_isPathFoundPattern() || sensors_anyOn()) break;
+            if (sensors_outerLeft() || sensors_isPathFoundPattern() || sensors_anyOn()) break;
             delay(5);
         }
     } else {
@@ -290,7 +354,7 @@ void robot_executeRedAvoid() {
         unsigned long t = millis();
         while (millis() - t < P.timeoutRight) {
             motors_pivotLeft(P.searchSpeed); sensors_read();
-            if (sensors_isPathFoundPattern() || sensors_anyOn()) break;
+            if (sensors_outerRight() || sensors_isPathFoundPattern() || sensors_anyOn()) break;
             delay(5);
         }
     }
