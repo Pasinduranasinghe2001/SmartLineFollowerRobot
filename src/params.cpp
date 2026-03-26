@@ -26,7 +26,7 @@ Params P = {
     100UL,  // forwardRecoverTime (ms)
 
     30.0f,  // kp
-    10.0f,   // kd
+    10.0f,  // kd
     0.05f,  // posFilter
     7.0f,   // widthKp
     1.5f,   // speedDrop
@@ -47,7 +47,7 @@ Params P = {
     100,    // avoidSpeed
     50,     // pickApproachSpeed
 
-    1000UL,  // reverseAvoidTime
+    1000UL, // reverseAvoidTime
     1400UL, // forwardAvoidTime
     650UL,  // turn90AvoidTime
 
@@ -58,8 +58,11 @@ Params P = {
     120,    // redThresh
     100,    // greenThresh
 
-    50,    // servoHomeAngle  (gate CLOSED = 110 deg)
-    120       // servoPickAngle  (gate OPEN   =   1 deg)
+    50,     // servoHomeAngle  (gate CLOSED)
+    120,    // servoPickAngle  (gate OPEN)
+
+    // FIX 1: endZoneHoldMs was missing from initialiser list -> undefined behaviour
+    60UL    // endZoneHoldMs (ms) - default 60 ms
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

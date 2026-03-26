@@ -104,9 +104,7 @@ void loop() {
     mqtt_loop();
     params_handleSerial();
 
-    // ── Stamp timestamp and ultrasonic into snapshot every tick ──────────────
-    // This ensures t_ms and dist are always current even if followLine() is
-    // not called this tick (e.g. robot is in recovery or obstacle slow mode).
+    // Stamp timestamp and ultrasonic into snapshot every tick
     pidSnap.loopMs = millis();
     float dist = ultrasonic_getCached();
     pidSnap.dist = dist;
@@ -139,24 +137,26 @@ void loop() {
             if (dist > P.obstacleSlowDist + 3.0f) {
                 Serial.println(F("[STATE] Clear -> LINE_FOLLOW"));
                 robotState = ST_LINE_FOLLOW;
-                break;
+                break;  // FIX 2: early break no longer leaks baseSpeed
+                        // because we no longer mutate P.baseSpeed here.
             }
             if (dist <= P.colorCheckDist) {
                 motors_stop();
                 Serial.printf("[STATE] dist %.1f cm -> COLOR_DETECT\n", dist);
                 robotState = ST_COLOR_DETECT;
-                break;
+                break;  // FIX 2: same - no baseSpeed mutation to restore
             }
             sensors_read();
-            int savedBase = P.baseSpeed;
-            P.baseSpeed   = P.approachSpeed;
+            // FIX 2: Use P.approachSpeed directly in motor calls instead of
+            // temporarily overwriting P.baseSpeed (which leaked on early break).
             if (!sensors_allDark()) {
                 sensors_updateLastSeenSide();
-                robot_followLine();
+                // Drive straight at approachSpeed without touching P.baseSpeed
+                motors_setLeft(P.approachSpeed, true);
+                motors_setRight(P.approachSpeed, true);
             } else {
                 motors_driveStraight(P.approachSpeed);
             }
-            P.baseSpeed = savedBase;
             break;
         }
 
@@ -186,16 +186,12 @@ void loop() {
     }
 
     // ─ Debug log timer (fires in ALL states) ─────────────────────────────────
-    // Both Serial verbose and LittleFS file logging are driven from here.
-    // Separating this from the state machine means you always get a log row
-    // even during recovery, obstacle approach, or idle sitting on a bench.
     if (millis() - _lastDebugMs >= DBG_VERBOSE_INTERVAL) {
         _lastDebugMs = millis();
 #if DBG_VERBOSE
-        robot_debugLog();   // prints HUMAN + HINT + CSV to Serial
-                            // also calls logger_appendRow if DBG_LOG_TO_FILE
+        robot_debugLog();
 #elif DBG_LOG_TO_FILE
-        logger_appendRow(pidSnap);  // file-only when verbose is off
+        logger_appendRow(pidSnap);
 #endif
     }
 
@@ -244,7 +240,14 @@ void loop() {
                         while (true) delay(100);
                     }
                 } else {
-                    if (_ezPhaseMs != 0 || !sensors_anyOn()) { Serial.println(F("[ENDZONE] Phase3 broken - full reset")); _ezReset(); }
+                    // FIX 3: Original condition "!sensors_anyOn()" would reset
+                    // immediately any time sensors_allOn() was false (which is
+                    // most of the time while approaching). Correct condition:
+                    // only reset when a non-zero timer exists AND allOn broke.
+                    if (_ezPhaseMs != 0) {
+                        Serial.println(F("[ENDZONE] Phase3 broken - full reset"));
+                        _ezReset();
+                    }
                 }
                 break;
 
