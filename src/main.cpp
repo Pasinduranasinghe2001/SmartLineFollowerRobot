@@ -14,6 +14,8 @@
 //  Debug: set DBG_VERBOSE=1 in config.h to enable PID log
 //         Serial Monitor shows HUMAN + CSV lines every DBG_VERBOSE_INTERVAL ms
 //         CSV can be copy-pasted into Excel / Serial Plotter for graphs
+//         Set DBG_LOG_TO_FILE=1 to save CSV to LittleFS /pidlog.csv
+//         without a USB connection. Type DUMPLOG after run to retrieve.
 // =========================================================================
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -26,6 +28,7 @@
 #include "color.h"
 #include "servo_gate.h"
 #include "robot.h"
+#include "logger.h"
 #include "mqtt_params.h"
 
 // Cube state
@@ -70,6 +73,7 @@ void setup() {
     ultrasonic_init();
     color_init();
     servo_init();
+    logger_init();
     mqtt_init();
 
     robotState   = ST_LINE_FOLLOW;
@@ -83,7 +87,11 @@ void setup() {
 #if DBG_VERBOSE
     Serial.println(F("[BOOT] DBG_VERBOSE=1: PID log active."));
     Serial.printf ("[BOOT] Log interval: %d ms\n", DBG_VERBOSE_INTERVAL);
-    Serial.println(F("[BOOT] CSV header will print on first followLine call."));
+    Serial.println(F("[BOOT] CSV header will print on first debug tick."));
+#endif
+#if DBG_LOG_TO_FILE
+    Serial.println(F("[BOOT] DBG_LOG_TO_FILE=1: writing /pidlog.csv to LittleFS."));
+    Serial.println(F("[BOOT] Type CLEARLOG to wipe before run, DUMPLOG to retrieve."));
 #endif
 
     Serial.println(F("[BOOT] Starting in 2 s..."));
@@ -96,7 +104,10 @@ void loop() {
     mqtt_loop();
     params_handleSerial();
 
-    // Cache ultrasonic for this loop tick and write into debug snapshot
+    // ── Stamp timestamp and ultrasonic into snapshot every tick ──────────────
+    // This ensures t_ms and dist are always current even if followLine() is
+    // not called this tick (e.g. robot is in recovery or obstacle slow mode).
+    pidSnap.loopMs = millis();
     float dist = ultrasonic_getCached();
     pidSnap.dist = dist;
 
@@ -174,13 +185,19 @@ void loop() {
             break;
     }
 
-    // ─ PID debug log (interval timer) ────────────────────────────────────────
-#if DBG_VERBOSE
+    // ─ Debug log timer (fires in ALL states) ─────────────────────────────────
+    // Both Serial verbose and LittleFS file logging are driven from here.
+    // Separating this from the state machine means you always get a log row
+    // even during recovery, obstacle approach, or idle sitting on a bench.
     if (millis() - _lastDebugMs >= DBG_VERBOSE_INTERVAL) {
         _lastDebugMs = millis();
-        robot_debugLog();
-    }
+#if DBG_VERBOSE
+        robot_debugLog();   // prints HUMAN + HINT + CSV to Serial
+                            // also calls logger_appendRow if DBG_LOG_TO_FILE
+#elif DBG_LOG_TO_FILE
+        logger_appendRow(pidSnap);  // file-only when verbose is off
 #endif
+    }
 
     // ─ End-zone 3-phase detector ──────────────────────────────────────────────
     if (cubeOnBoard) {
