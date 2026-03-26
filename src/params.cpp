@@ -9,27 +9,27 @@
 
 Params P = {
     // PID / line-follow
-    140,    // baseSpeed
+    160,    // baseSpeed
     180,    // fastSpeed
-    120,    // slowSpeed
+    145,    // slowSpeed
     150,    // turnSpeed
-    150,    // sharpSpeed
-    150,    // recoverSpeed
-    150,    // searchSpeed
-    180,    // reverseSpeed
+    160,    // sharpSpeed
+    175,    // recoverSpeed
+    170,    // searchSpeed
+    150,    // reverseSpeed
     25,     // reverseBiasDelta
     140,    // forwardRecoverSpeed
-    150,    // minSpeed
+    140,    // minSpeed
 
-    2000UL, // timeoutLeft  (ms)
-    1800UL, // timeoutRight (ms)
-    800UL,  // forwardRecoverTime (ms)
+    1000UL, // timeoutLeft  (ms)
+    4000UL, // timeoutRight (ms)
+    100UL,  // forwardRecoverTime (ms)
 
-    25.0f,  // kp
-    9.0f,   // kd
-    0.0f,  // posFilter
-    6.0f,   // widthKp
-    2.0f,   // speedDrop
+    30.0f,  // kp
+    10.0f,   // kd
+    0.05f,  // posFilter
+    7.0f,   // widthKp
+    1.5f,   // speedDrop
 
     0,      // leftTrim
     0,      // rightTrim
@@ -47,7 +47,7 @@ Params P = {
     100,    // avoidSpeed
     50,     // pickApproachSpeed
 
-    500UL,  // reverseAvoidTime
+    1000UL,  // reverseAvoidTime
     1400UL, // forwardAvoidTime
     650UL,  // turn90AvoidTime
 
